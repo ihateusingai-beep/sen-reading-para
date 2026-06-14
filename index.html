@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>朗讀評分 — 散文・詩詞</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E📖%3C/text%3E%3C/svg%3E">
 <!-- Transformers.js for on-device Whisper ASR (lazy loaded) -->
 <script type="module">
   // Just expose the CDN URL as a hint. Actual dynamic import happens on first use.
@@ -234,10 +235,6 @@ button:active { transform:scale(0.95); }
             <option value="3">⭐⭐⭐ 難</option>
           </select>
         </label>
-        <label style="font-size:1.1em;flex:1;">
-          錄音秒數
-          <input id="pm_audio" type="number" min="5" max="60" value="15" style="width:100%;font-size:1.1em;padding:12px;border-radius:10px;border:2px solid #555;background:#222;color:#fff;">
-        </label>
       </div>
       <label style="font-size:1.1em;">
         文章內容 <span style="color:#ef4444;">*</span>
@@ -304,8 +301,8 @@ let state = {
   progress: {},       // { [studentId]: progressObj }
   // ASR engine selection (pluggable)
   asrEngine: 'webspeech',  // 'webspeech' | 'whisper' | 'custom'
-  // Recording timeout in seconds (configurable by teacher for SEN students)
-  recordingTimeout: 4
+  // Recording timeout (seconds). null = unlimited; student taps "完成" when done.
+  recordingTimeout: null
 };
 
 // ================== SECURITY ==================
@@ -566,7 +563,7 @@ function showPassageSelector() {
         <div style="color:#666;font-size:1em;margin-bottom:6px;">${_e(p.author || '')}</div>
         <div style="color:#f59e0b;font-size:1.1em;margin-bottom:8px;">${stars}</div>
         <div style="color:#555;font-size:0.95em;background:#f9f9f9;padding:10px;border-radius:10px;line-height:1.4;">${_e(pShort)}</div>
-        <div style="color:#999;font-size:0.85em;margin-top:6px;">⏱ 約 ${p.audioSeconds || 10} 秒</div>
+        <div style="color:#999;font-size:0.85em;margin-top:6px;">⏱ 錄音無時限，自行控制</div>
       </div>`;
   });
   html += `</div>`;
@@ -652,15 +649,28 @@ function startPassageReading(passage) {
 }
 
 let recognition;
+let _currentRecorder = null;
 let _currentAudioBlob = null;
+
+// "Stop recording" trigger from the in-recording UI button.
+// Works for both Web Speech (recognition.stop()) and MediaRecorder (recorder.stop()).
+function _stopRecordingFromUI() {
+  try {
+    if (typeof recognition !== 'undefined' && recognition) {
+      try { recognition.stop(); } catch(e) {}
+    }
+    if (_currentRecorder && _currentRecorder.state === 'recording') {
+      _currentRecorder.stop();
+    }
+  } catch(e) { console.warn('stop from UI failed', e); }
+}
 
 function startRecording() {
   const status = document.getElementById('recordingStatus');
   const engine = _ASR_ENGINES[state.asrEngine] || _ASR_ENGINES.webspeech;
   const passage = state.currentPassage;
-  // Use passage-specific timeout (default 15s for prose, 10s for poetry)
-  const timeout = passage && passage.audioSeconds ? passage.audioSeconds : 15;
-  state.recordingTimeout = timeout;
+  // No auto-stop: student finishes when ready, then taps "完成" button.
+  state.recordingTimeout = null;
 
   if (!engine.isAvailable()) {
     status.innerHTML = '❌ 此裝置唔支援 ' + engine.name;
@@ -668,15 +678,11 @@ function startRecording() {
   }
 
   status.innerHTML = `
-    <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0;">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:12px;margin:8px 0;">
       <div style="font-size:1.4em;color:#ef4444;font-weight:bold;">🔴 錄音中</div>
-      <div style="width:100%;max-width:320px;height:20px;background:rgba(255,255,255,0.15);border-radius:10px;overflow:hidden;position:relative;">
-        <div id="recCountdownBar" style="height:100%;background:linear-gradient(90deg,#ef4444,#f59e0b);border-radius:10px;width:100%;transition:width 0.1s linear;"></div>
-      </div>
-      <div style="font-size:1.6em;font-weight:bold;color:#f59e0b;" id="recCountdownNum">${timeout}</div>
-      <div style="font-size:1em;color:rgba(255,255,255,0.7);">大聲朗讀文章 👄</div>
+      <div style="font-size:1em;color:rgba(255,255,255,0.7);">大聲朗讀文章，準備好就撳「完成」 👄</div>
+      <button onclick="_stopRecordingFromUI()" style="background:#22c55e;font-size:1.2em;padding:14px 32px;min-height:56px;border-radius:14px;color:#fff;min-width:160px;">⏹ 完成</button>
     </div>`;
-  _startCountdownBar(timeout);
 
   // For non-WebSpeech engines, we use MediaRecorder to capture audio blob
   if (engine.id === 'webspeech') {
@@ -714,7 +720,6 @@ function startRecording() {
       status.innerHTML = msg + '，請再試';
     };
     recognition.onend = () => {
-      _stopCountdownBar();
       if (status.innerHTML.includes('錄音中')) status.innerHTML = '錄音結束';
     };
   } else {
@@ -724,13 +729,14 @@ function startRecording() {
       return;
     }
     navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-      const recorder = new MediaRecorder(stream);
+      _currentRecorder = new MediaRecorder(stream);
       const chunks = [];
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-      recorder.onstop = async () => {
+      _currentRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      _currentRecorder.onstop = async () => {
         stream.getTracks().forEach(t => t.stop());
         const blob = new Blob(chunks, { type: 'audio/webm' });
         _currentAudioBlob = blob;
+        _currentRecorder = null;
         try {
           const result = await engine.transcribe(blob, (progress) => {
             status.innerHTML = '⏳ ' + (progress.message || '處理中…');
@@ -750,18 +756,13 @@ if (result.text) {
               _promptManualPassageInput(status, state.currentPassage);
             }
           }
-          }
         } catch (e) {
           console.error(e);
           status.innerHTML = '❌ 引擎錯誤：' + e.message;
         }
       };
-      recorder.start();
-      // Auto-stop after configured seconds (configurable for SEN students)
-      setTimeout(() => {
-        _stopCountdownBar();
-        if (recorder.state === 'recording') recorder.stop();
-      }, state.recordingTimeout * 1000);
+      _currentRecorder.start();
+      // No auto-stop: student finishes when ready and taps "完成".
     }).catch(err => {
       status.innerHTML = '❌ 麥克風權限被拒：' + err.message;
     });
@@ -779,34 +780,6 @@ function _promptManualPassageInput(status, passage) {
   scorePassage(txt, { engine: 'manual' });
 }
 
-// Visual countdown bar + number for recording timeout
-let _countdownTimer = null;
-function _startCountdownBar(seconds) {
-  seconds = seconds || state.recordingTimeout;
-  const bar = document.getElementById('recCountdownBar');
-  const num = document.getElementById('recCountdownNum');
-  if (!bar || !num) return;
-  const totalMs = seconds * 1000;
-  const startTime = Date.now();
-  const update = () => {
-    const elapsed = Date.now() - startTime;
-    const remaining = Math.max(0, totalMs - elapsed);
-    const pct = (remaining / totalMs) * 100;
-    if (bar) bar.style.width = pct + '%';
-    const secLeft = Math.ceil(remaining / 1000);
-    if (num) num.textContent = secLeft;
-    if (remaining <= 0) {
-      if (num) num.textContent = '0';
-      return;
-    }
-    _countdownTimer = requestAnimationFrame(update);
-  };
-  _countdownTimer = requestAnimationFrame(update);
-}
-
-function _stopCountdownBar() {
-  if (_countdownTimer) { cancelAnimationFrame(_countdownTimer); _countdownTimer = null; }
-}
 async function _customScoreAudio(audioBlob, passage) {
   try {
     const arrayBuffer = await audioBlob.arrayBuffer();
@@ -825,8 +798,9 @@ async function _customScoreAudio(audioBlob, passage) {
       if (i > 0 && Math.sign(channel[i-1]) !== Math.sign(v)) zcr++;
     }
     const rms = Math.sqrt(sumSq / channel.length);
-    const expected = passage && passage.audioSeconds ? passage.audioSeconds : 12;
-    const durationMatch = Math.max(0, 1 - Math.abs(duration - expected) / Math.max(duration, expected));
+    // Recording is unlimited — duration match is gentle (only penalises very short or runaway-long takes).
+    const expected = 15;
+    const durationMatch = duration > 2 ? Math.max(0, 1 - Math.abs(duration - expected) / Math.max(duration, expected)) : 0;
     const energyMatch = rms > 0.01 ? 0.8 : 0.4;
     const score = Math.round(Math.min(100, Math.max(0, energyMatch * 50 + durationMatch * 40 + (peak > 0.05 ? 10 : 0))));
     return { score, duration, rms, peak, durationMatch, energyMatch };
@@ -1182,79 +1156,33 @@ function showMyProgress() {
   goTo('myProgress');
 }
 
-// INIT — fetch JSON data then restore session state
+// INIT — inline default data so it works without a server (file:// protocol)
+const _DEFAULT_PASSAGES = [{"id":"prose-001","type":"prose","title":"春天的校園","author":"課本選文","difficulty":1,"text":"春天的校園，花兒開了，草兒綠了。同學們在操場上跑步，做運動。陽光溫暖，微風輕輕吹過。"},{"id":"prose-002","type":"prose","title":"我的家人","author":"課本選文","difficulty":1,"text":"我的爸爸很愛我，每天送我上學。我的媽媽煮飯很好吃。我的哥哥會踢足球。我愛我的家。"},{"id":"prose-003","type":"prose","title":"快樂的一天","author":"課本選文","difficulty":1,"text":"今天是星期日，爸爸帶我去公園。我玩了鞦韆，又放了風箏。媽媽買了雪糕給我吃。這一天真開心。"},{"id":"prose-004","type":"prose","title":"下雨天","author":"課本選文","difficulty":2,"text":"外面下着大雨，小明撐着紅色的雨傘去學校。雨點打在雨傘上，發出滴滴答答的聲音。到了學校，他的鞋子和褲子都是乾的。"},{"id":"prose-005","type":"prose","title":"可愛的小狗","author":"課本選文","difficulty":2,"text":"鄰居家有一隻小狗，毛是白色的，眼睛又大又黑。它見到我時會搖尾巴，我每天都會和它玩。小狗真是人類的好朋友。"},{"id":"poetry-001","type":"poetry","title":"靜夜思","author":"李白（唐）","difficulty":1,"text":"床前明月光，疑是地上霜。舉頭望明月，低頭思故鄉。"},{"id":"poetry-002","type":"poetry","title":"詠鵝","author":"駱賓王（唐）","difficulty":1,"text":"鵝鵝鵝，曲項向天歌。白毛浮綠水，紅掌拨清波。"},{"id":"poetry-003","type":"poetry","title":"春曉","author":"孟浩然（唐）","difficulty":1,"text":"春眠不覺曉，處處聞啼鳥。夜來風雨聲，花落知多少。"},{"id":"poetry-004","type":"poetry","title":"憫農","author":"李紳（唐）","difficulty":1,"text":"鋤禾日當午，汗滴禾下土。誰知盤中餐，粒粒皆辛苦。"},{"id":"poetry-005","type":"poetry","title":"登鸛雀樓","author":"王之渙（唐）","difficulty":2,"text":"白日依山盡，黃河入海流。欲窮千里目，更上一層樓。"}];
+const _DEFAULT_TYPES = [{"id":"prose","label":"散文","description":"抒情散文、短文朗讀","enabled":true,"icon":"📖"},{"id":"poetry","label":"詩詞","description":"詩詞朗誦","enabled":true,"icon":"🪷"}];
+
 async function init() {
-  // Load passage types + passages
-  try {
-    const resp = await fetch('data/passages.json');
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const data = await resp.json();
-    const freshTypes = data.types || [];
-    const freshPassages = data.passages || [];
+  // Load passages: try localStorage first, then inline defaults
+  const savedPassages = localStorage.getItem('yuePassages');
+  if (savedPassages) {
+    try { state.passages = JSON.parse(savedPassages); } catch(e) { state.passages = _DEFAULT_PASSAGES; }
+  } else {
+    state.passages = _DEFAULT_PASSAGES;
+  }
 
-    const savedTypes = localStorage.getItem('yueTypes');
-    if (savedTypes) {
-      try {
-        const parsed = JSON.parse(savedTypes);
-        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
-          const savedById = {};
-          parsed.forEach(t => { savedById[t.id] = t; });
-          const reconciled = freshTypes.map(ft => {
-            const saved = savedById[ft.id];
-            if (saved) {
-              return { ...ft, ...saved, id: ft.id, passages: Array.isArray(saved.passages) ? saved.passages : (ft.passages || []) };
-            }
-            return ft;
-          });
-          parsed.forEach(p => {
-            if (!freshTypes.find(f => f.id === p.id)) reconciled.push(p);
-          });
-          state.types = reconciled;
-        } else {
-          state.types = freshTypes;
-        }
-      } catch(e) {
-        state.types = freshTypes;
-      }
-    } else {
-      state.types = freshTypes;
-    }
+  const savedTypes = localStorage.getItem('yueTypes');
+  if (savedTypes) {
+    try { state.types = JSON.parse(savedTypes); } catch(e) { state.types = _DEFAULT_TYPES; }
+  } else {
+    state.types = _DEFAULT_TYPES;
+  }
 
-    // Load passages: saved passages override fresh ones (teacher may have edited)
-    const savedPassages = localStorage.getItem('yuePassages');
-    if (savedPassages) {
-      try {
-        state.passages = JSON.parse(savedPassages);
-      } catch(e) {
-        state.passages = freshPassages;
-      }
-    } else {
-      state.passages = freshPassages;
-    }
-
-    const savedSettings = localStorage.getItem('yueAdminSettings');
-    if (savedSettings) {
-      try {
-        const overrides = JSON.parse(savedSettings);
-        state.types.forEach(t => {
-          if (overrides[t.id] !== undefined) t.enabled = overrides[t.id];
-        });
-      } catch(e) {}
-    }
-  } catch(e) {
-    console.warn('無法載入 data/passages.json', e);
-    const savedTypes = localStorage.getItem('yueTypes');
-    if (savedTypes) {
-      try { state.types = JSON.parse(savedTypes); } catch(e2) {}
-    } else {
-      state.types = [];
-    }
-    const savedPassages = localStorage.getItem('yuePassages');
-    if (savedPassages) {
-      try { state.passages = JSON.parse(savedPassages); } catch(e2) {}
-    } else {
-      state.passages = [];
-    }
+  // Apply enabled overrides
+  const savedSettings = localStorage.getItem('yueAdminSettings');
+  if (savedSettings) {
+    try {
+      const overrides = JSON.parse(savedSettings);
+      state.types.forEach(t => { if (overrides[t.id] !== undefined) t.enabled = overrides[t.id]; });
+    } catch(e) {}
   }
 
   // Load students + progress
@@ -1283,11 +1211,8 @@ async function init() {
     state.asrEngine = savedEngine;
   }
 
-  const savedTimeout = localStorage.getItem('yueRecordingTimeout');
-  if (savedTimeout) {
-    const t = parseInt(savedTimeout, 10);
-    if (!isNaN(t) && t >= 2 && t <= 60) state.recordingTimeout = t;
-  }
+  // Recording is unlimited; legacy yueRecordingTimeout no longer used.
+  state.recordingTimeout = null;
 
   state.mode = 'student';
   const lastStudent = localStorage.getItem('yueLastStudentId');
@@ -1384,22 +1309,10 @@ function exitTeacherMode() {
   showToast('👋 已退出老師模式');
 }
 
-function adjustTimeout(delta) {
-  state.recordingTimeout = Math.max(2, Math.min(60, state.recordingTimeout + delta));
-  saveTimeout();
-}
-
+// Recording is unlimited; students tap "完成" when they're done.
+// (Legacy timeout setters removed; kept state.recordingTimeout for schema compat.)
 function saveTimeout() {
-  localStorage.setItem('yueRecordingTimeout', state.recordingTimeout);
-  // Re-render the timeout display in settings if it's open
-  const disp = document.getElementById('timeoutDisplay');
-  if (disp) disp.textContent = state.recordingTimeout + ' 秒';
-  // Update the quick-select button colours
-  [4, 6, 8].forEach(v => {
-    const btn = document.getElementById('timeoutBtn_' + v);
-    if (btn) btn.style.background = state.recordingTimeout === v ? '#22c55e' : '#444';
-  });
-  showToast('⏱ 錄音時長：' + state.recordingTimeout + ' 秒');
+  // No-op: recording no longer has a timeout.
 }
 
 // Allow teacher to reset their password from the settings tab
@@ -1491,18 +1404,8 @@ function renderTeacherSettings() {
       <button onclick="clearWhisperCache()" style="margin-top:8px;width:100%;background:#dc2626;font-size:0.95em;padding:10px;min-height:44px;">🗑 清除 cache</button>
     </div>
     <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-top:16px;">
-      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">⏱ 錄音時長設定</p>
-      <p style="color:rgba(255,255,255,0.7);font-size:0.95em;margin-bottom:12px;">每篇文章的錄音時限。輕度學生可以調長。</p>
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-        <button onclick="adjustTimeout(-1)" style="background:#444;color:#fff;font-size:1.4em;padding:8px 18px;min-height:48px;border-radius:10px;min-width:52px;">−</button>
-        <div style="font-size:2em;font-weight:bold;color:#f59e0b;min-width:60px;text-align:center;" id="timeoutDisplay">${state.recordingTimeout} 秒</div>
-        <button onclick="adjustTimeout(1)" style="background:#444;color:#fff;font-size:1.4em;padding:8px 18px;min-height:48px;border-radius:10px;min-width:52px;">+</button>
-        <div style="display:flex;flex-direction:column;gap:4px;margin-left:8px;">
-          <button id="timeoutBtn_4" onclick="state.recordingTimeout=4;saveTimeout();" style="background:${state.recordingTimeout===4?'#22c55e':'#444'};color:#fff;font-size:0.85em;padding:6px 12px;min-height:36px;border-radius:8px;">預設 4秒</button>
-          <button id="timeoutBtn_6" onclick="state.recordingTimeout=6;saveTimeout();" style="background:${state.recordingTimeout===6?'#22c55e':'#444'};color:#fff;font-size:0.85em;padding:6px 12px;min-height:36px;border-radius:8px;">慢朗讀 6秒</button>
-          <button id="timeoutBtn_8" onclick="state.recordingTimeout=8;saveTimeout();" style="background:${state.recordingTimeout===8?'#22c55e':'#444'};color:#fff;font-size:0.85em;padding:6px 12px;min-height:36px;border-radius:8px;">超慢 8秒</button>
-        </div>
-      </div>
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">⏱ 錄音時長</p>
+      <p style="color:rgba(255,255,255,0.7);font-size:0.95em;margin:0;">無時限。學生準備好就撳「完成」。</p>
     </div>
     <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-top:16px;">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📊 引擎使用統計</p>
@@ -1763,10 +1666,13 @@ function _seedDemoProgress() {
       prog.records.push({ passageId: psg.id, passageTitle: psg.title, score, at });
       prog.totalAttempts += 1;
       if (!prog.lastSession || at > prog.lastSession) prog.lastSession = at;
+      const transcript = '（示範朗讀）';
       if (!prog.byPassage[psg.id]) prog.byPassage[psg.id] = { bestScore: 0, attempts: 0, lastTry: null, history: [] };
       if (score > prog.byPassage[psg.id].bestScore) prog.byPassage[psg.id].bestScore = score;
       prog.byPassage[psg.id].attempts += 1;
       prog.byPassage[psg.id].lastTry = at;
+      prog.byPassage[psg.id].history.push({ score, transcript, at });
+      if (prog.byPassage[psg.id].history.length > 20) prog.byPassage[psg.id].history = prog.byPassage[psg.id].history.slice(-20);
     }
 
     prog.records.sort((a, b) => new Date(a.at) - new Date(b.at));
@@ -2362,7 +2268,7 @@ function _renderSparkline(data, width, height) {
   </svg>`;
 }
 
-// Render a row of N colored dots, one per recent practice session.
+// Render a row of N colored dots, one per recent reading session.
 // Color: green ≥80 (mastered), amber 60-79 (practicing), red <60 (struggling), gray = no data.
 // `scores` is the student's full score history; we take the last N.
 function _renderSessionDots(scores, n) {
@@ -2372,18 +2278,19 @@ function _renderSessionDots(scores, n) {
   const padded = [];
   for (let i = 0; i < n - recent.length; i++) padded.push(null);
   for (const s of recent) padded.push(s);
+  const dotW = (100 / n).toFixed(2);
   const dots = padded.map((s, i) => {
     if (s === null) {
-      return `<span title="第 ${i+1} 次：未有資料" style="display:inline-block;width:14px;height:14px;border-radius:50%;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);margin:0 1px;vertical-align:middle;"></span>`;
+      return `<span title="未有資料" style="flex:0 0 ${dotW}%;max-width:${dotW}%;height:14px;border-radius:50%;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);margin:0 1px;"></span>`;
     }
     const c = s.score >= 80 ? '#22c55e' : s.score >= 60 ? '#f59e0b' : '#ef4444';
     const ptitle = s.passageTitle || '';
     const date = s.at ? new Date(s.at).toLocaleString('zh-HK', { month:'numeric', day:'numeric' }) : '';
-    return `<span title="${ptitle ? ptitle + ' — ' : ''}${s.score}分（${date}）" style="display:inline-block;width:14px;height:14px;border-radius:50%;background:${c};box-shadow:0 0 0 1px rgba(0,0,0,0.3) inset;margin:0 1px;vertical-align:middle;"></span>`;
+    return `<span title="${ptitle ? ptitle + ' — ' : ''}${s.score}分（${date}）" style="flex:0 0 ${dotW}%;max-width:${dotW}%;height:14px;border-radius:50%;background:${c};box-shadow:0 0 0 1px rgba(0,0,0,0.3) inset;margin:0 1px;"></span>`;
   }).join('');
   return `<div style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:rgba(255,255,255,0.5);">
     <span style="flex-shrink:0;">近 ${n} 次：</span>
-    <span style="flex:1;letter-spacing:0;line-height:1;">${dots}</span>
+    <span style="flex:1;min-width:0;letter-spacing:0;line-height:1;">${dots}</span>
   </div>`;
 }
 
@@ -3066,7 +2973,6 @@ function openPassageModal(psg) {
   document.getElementById('pm_type').value = psg.type || 'prose';
   document.getElementById('pm_difficulty').value = psg.difficulty || 1;
   document.getElementById('pm_text').value = psg.text || '';
-  document.getElementById('pm_audio').value = psg.audioSeconds || 15;
   document.getElementById('passageModalTitle').textContent = _editingPassageId ? '✏️ 編輯文章' : '✏️ 新增文章';
   modal.style.display = 'block';
 }
@@ -3089,8 +2995,7 @@ function savePassageFromModal() {
     author: document.getElementById('pm_author').value.trim(),
     type: document.getElementById('pm_type').value,
     difficulty: parseInt(document.getElementById('pm_difficulty').value) || 1,
-    text,
-    audioSeconds: parseInt(document.getElementById('pm_audio').value) || 15
+    text
   };
   if (_editingPassageId) {
     const idx = state.passages.findIndex(p => p.id === _editingPassageId);
@@ -3185,7 +3090,7 @@ function resetToDefaultPassages() {
       renderPassageList();
       showToast('🔄 已重設為預設值');
     } catch(e) {
-      alert('重設失敗：' + e.message);
+      showToast('❌ 重設失敗：網絡問題，請確保已連線');
     }
   });
 }
