@@ -1,0 +1,112 @@
+{
+  "_comment": "朗讀文章資料庫 — 教師可直接編輯此檔案增減文章或分類",
+  "_teacher_guide": "每個 type 的 enabled: true/false 控制是否出現在朗讀和評估中",
+  "types": [
+    {
+      "id": "prose",
+      "label": "散文",
+      "description": "抒情散文、短文朗讀",
+      "enabled": true,
+      "icon": "📖"
+    },
+    {
+      "id": "poetry",
+      "label": "詩詞",
+      "description": "詩詞朗誦",
+      "enabled": true,
+      "icon": "🪷"
+    }
+  ],
+  "passages": [
+    {
+      "id": "prose-001",
+      "type": "prose",
+      "title": "春天的校園",
+      "author": "課本選文",
+      "difficulty": 1,
+      "text": "春天的校園，花兒開了，草兒綠了。同學們在操場上跑步、做運動。陽光溫暖，微風輕輕吹過。",
+      "audioSeconds": 12
+    },
+    {
+      "id": "prose-002",
+      "type": "prose",
+      "title": "我的家人",
+      "author": "課本選文",
+      "difficulty": 1,
+      "text": "我的爸爸很愛我，每天送我上學。我的媽媽煮飯很好吃。我的哥哥會踢足球。我愛我的家。",
+      "audioSeconds": 12
+    },
+    {
+      "id": "prose-003",
+      "type": "prose",
+      "title": "快樂的一天",
+      "author": "課本選文",
+      "difficulty": 1,
+      "text": "今天是星期日，爸爸帶我去公園。我玩了鞦韆，又放了風箏。媽媽買了雪糕給我吃。這一天真開心。",
+      "audioSeconds": 14
+    },
+    {
+      "id": "prose-004",
+      "type": "prose",
+      "title": "下雨天",
+      "author": "課本選文",
+      "difficulty": 2,
+      "text": "外面下着大雨，小明撐着紅色的雨傘去學校。雨點打在雨傘上，發出滴滴答答的聲音。到了學校，他的鞋子和褲子都是乾的。",
+      "audioSeconds": 14
+    },
+    {
+      "id": "prose-005",
+      "type": "prose",
+      "title": "可愛的小狗",
+      "author": "課本選文",
+      "difficulty": 2,
+      "text": "鄰居家有一隻小狗，毛是白色的，眼睛又大又黑。它見到我時會搖尾巴，我每天都會和它玩。小狗真是人類的好朋友。",
+      "audioSeconds": 14
+    },
+    {
+      "id": "poetry-001",
+      "type": "poetry",
+      "title": "靜夜思",
+      "author": "李白（唐）",
+      "difficulty": 1,
+      "text": "床前明月光，疑是地上霜。舉頭望明月，低頭思故鄉。",
+      "audioSeconds": 10
+    },
+    {
+      "id": "poetry-002",
+      "type": "poetry",
+      "title": "詠鵝",
+      "author": "駱賓王（唐）",
+      "difficulty": 1,
+      "text": "鵝鵝鵝，曲項向天歌。白毛浮綠水，紅掌拨清波。",
+      "audioSeconds": 8
+    },
+    {
+      "id": "poetry-003",
+      "type": "poetry",
+      "title": "春曉",
+      "author": "孟浩然（唐）",
+      "difficulty": 1,
+      "text": "春眠不覺曉，處處聞啼鳥。夜來風雨聲，花落知多少。",
+      "audioSeconds": 10
+    },
+    {
+      "id": "poetry-004",
+      "type": "poetry",
+      "title": "憫農",
+      "author": "李紳（唐）",
+      "difficulty": 1,
+      "text": "鋤禾日當午，汗滴禾下土。誰知盤中餐，粒粒皆辛苦。",
+      "audioSeconds": 10
+    },
+    {
+      "id": "poetry-005",
+      "type": "poetry",
+      "title": "登鸛雀樓",
+      "author": "王之渙（唐）",
+      "difficulty": 2,
+      "text": "白日依山盡，黃河入海流。欲窮千里目，更上一層樓。",
+      "audioSeconds": 10
+    }
+  ]
+}

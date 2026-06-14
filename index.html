@@ -1,0 +1,3196 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>朗讀評分 — 散文・詩詞</title>
+<!-- Transformers.js for on-device Whisper ASR (lazy loaded) -->
+<script type="module">
+  // Just expose the CDN URL as a hint. Actual dynamic import happens on first use.
+  window.TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5';
+</script>
+<style>
+:root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:'Microsoft JhengHei',sans-serif; background:#1a1a2e; color:#fff; font-size:18px; min-height:100vh; }
+.page { display:none; min-height:100vh; padding:20px; }
+.page.active { display:block; }
+.home-card, .hub-card, .vocab-card, .result-card { background:#fff; color:#1a1a2e; border:4px solid #f59e0b; border-radius:24px; padding:24px; margin:20px auto; max-width:700px; }
+h1,h2 { font-size:2.2em; color:#f59e0b; text-align:center; margin-bottom:20px; }
+input, button { font-size:1.4em; padding:18px 32px; border-radius:16px; border:none; min-height:70px; }
+button { background:#7c3aed; color:#fff; cursor:pointer; touch-action:manipulation; }
+button:active { transform:scale(0.95); }
+.vocab-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:20px; max-width:900px; margin:0 auto; }
+.vocab-card { text-align:center; cursor:pointer; transition:transform .2s; }
+.vocab-card:hover { transform:scale(1.03); }
+.vocab-char { font-size:2.8em; font-weight:bold; color:#7c3aed; }
+.vocab-pinyin { color:#666; margin:8px 0; }
+.record-btn { background:#22c55e; font-size:1.6em; width:100%; margin-top:16px; }
+.score { font-size:2.5em; font-weight:bold; color:#22c55e; }
+.hub-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:20px; max-width:800px; margin:0 auto; }
+.hub-card { background:rgba(255,255,255,0.1); border:3px solid rgba(255,255,255,0.3); color:#fff; text-align:center; cursor:pointer; }
+.hub-icon { font-size:3em; margin-bottom:12px; }
+.progress { position:fixed; top:0; left:0; width:100%; background:#111; padding:8px; z-index:100; }
+.progress-dots { display:flex; justify-content:center; gap:12px; }
+.progress-dot { width:28px; height:28px; border-radius:50%; background:#444; display:flex; align-items:center; justify-content:center; font-size:0.9em; }
+.progress-dot.done { background:#22c55e; }
+.progress-dot.current { background:#f59e0b; animation:pulse 1.5s infinite; }
+@keyframes pulse { 50%{transform:scale(1.2);} }
+#toast { position:fixed; bottom:30px; left:50%; transform:translateX(-50%); background:#333; color:#fff; padding:14px 28px; border-radius:12px; z-index:9999; display:none; pointer-events:none; }
+.student-avatar-card {
+  background:#fff;
+  color:#1a1a2e;
+  border:4px solid #f59e0b;
+  border-radius:20px;
+  padding:20px 12px;
+  cursor:pointer;
+  text-align:center;
+  transition:transform .2s;
+  touch-action:manipulation;
+  min-height:120px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+}
+.student-avatar-card:hover { transform:scale(1.05); }
+.student-avatar-card:active { transform:scale(0.95); }
+.student-emoji { font-size:3em;display:block;margin-bottom:6px; }
+
+/* ===== Responsive: phone portrait / small iPad ===== */
+@media (max-width: 600px) {
+  body { font-size:16px; }
+  .page { padding:12px; padding-top:48px; }  /* leave room for fixed progress bar */
+  /* Shrink the home card top margin so PIN keypad fits — kept for reference only (PIN mode removed 2026-06-13) */
+  .home-card[style*="margin-top:60px"] { margin-top:20px !important; }
+  h1, h2 { font-size:1.6em; }
+  .home-card, .hub-card, .vocab-card, .result-card { padding:16px; margin:12px auto; border-width:3px; }
+  /* Hub: stack 3 cards vertically on phone */
+  .hub-grid { grid-template-columns:1fr; gap:12px; }
+  .hub-icon { font-size:2.4em; }
+  /* Vocab grid: still auto-fit but allow smaller min so single-column on phone */
+  .vocab-grid { grid-template-columns:1fr; gap:12px; }
+  /* Teacher summary 4-col → 2-col on phone */
+  .page > div[style*="grid-template-columns:repeat(4,1fr)"] { grid-template-columns:repeat(2,1fr) !important; }
+  /* Touch target enforcement */
+  button, input { min-height:60px; font-size:1.2em; }
+  /* Student avatar grid: 2 columns on phone */
+  #studentAvatarGrid { grid-template-columns:repeat(2,1fr) !important; gap:12px !important; }
+  .student-avatar-card { min-height:100px !important; padding:14px 8px !important; }
+}
+@media (max-width: 380px) {
+  /* Very narrow phone: tighter grid */
+  .student-avatar-card { min-height:90px !important; padding:10px 6px !important; }
+}
+</style>
+</head>
+<body>
+<div class="progress"><div class="progress-dots" id="progressDots"></div></div>
+
+<!-- HOME / LOGIN — student grid (no auth needed for SEN use case) -->
+<div id="home" class="page active">
+  <div style="text-align:center;max-width:700px;margin:40px auto;padding:0 20px;">
+    <h1 style="font-size:2.2em;color:#f59e0b;margin-bottom:8px;">朗讀評分</h1>
+    <p style="font-size:1.2em;color:rgba(255,255,255,0.8);margin-bottom:32px;">散文・詩詞朗讀評估</p>
+
+    <!-- Student avatar grid -->
+    <p style="font-size:1.1em;color:rgba(255,255,255,0.7);margin-bottom:20px;">撳你嘅相卡嚟開始朗讀</p>
+    <div id="studentAvatarGrid" style="display:grid;gap:16px;max-width:560px;margin:0 auto;"><div style="grid-column:1/-1;text-align:center;padding:60px 0;color:rgba(255,255,255,0.4);font-size:1.2em;">⏳ 載入中…</div></div>
+    <div id="loginError" style="color:#ef4444;font-size:1.1em;min-height:24px;margin-top:16px;"></div>
+
+    <!-- Confirmation modal -->
+    <div id="confirmCard" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:9000;align-items:center;justify-content:center;">
+      <div style="background:#1a1a2e;border:4px solid #f59e0b;border-radius:24px;padding:32px;max-width:340px;width:90%;text-align:center;">
+        <div id="confirmCardEmoji" style="font-size:5em;margin-bottom:12px;"></div>
+        <div id="confirmCardName" style="font-size:2em;font-weight:bold;color:#f59e0b;margin-bottom:8px;"></div>
+        <div style="color:rgba(255,255,255,0.7);font-size:1.1em;margin-bottom:28px;">係你嗎？</div>
+        <button id="confirmCardYes" style="width:100%;background:#22c55e;font-size:1.3em;padding:16px;border-radius:16px;min-height:64px;">係，開始 ✅</button>
+        <button onclick="cancelCardLogin()" style="margin-top:12px;background:#444;color:#fff;font-size:1.1em;padding:12px;border-radius:14px;width:100%;min-height:52px;">唔係，取消</button>
+      </div>
+    </div>
+
+    <!-- Teacher entry — small, unobtrusive, at bottom -->
+    <div style="margin-top:48px;padding-top:24px;border-top:1px solid rgba(255,255,255,0.15);">
+      <button onclick="enterTeacherMode()" style="background:transparent;color:rgba(255,255,255,0.45);font-size:0.9em;padding:10px 20px;min-height:44px;border:1px solid rgba(255,255,255,0.2);border-radius:10px;">🔧 老師模式</button>
+    </div>
+
+    <div id="engineStatusHome" style="margin-top:16px;font-size:0.85em;color:rgba(255,255,255,0.4);"></div>
+  </div>
+</div>
+
+<!-- HUB -->
+<div id="hub" class="page">
+  <div style="max-width:800px;margin:40px auto;text-align:center;">
+    <div id="hubGreeting" style="font-size:2em;margin-bottom:30px;">👋 你好，準備好未？</div>
+    <div class="hub-grid">
+      <div class="hub-card" onclick="goTo('assessment');startAssessment();">
+        <div class="hub-icon">📖</div>
+        <div style="font-size:1.5em;font-weight:bold;">朗讀</div>
+        <div style="opacity:0.8;">揀文章朗讀評分</div>
+        <div id="hubAssessment" style="margin-top:12px;"></div>
+      </div>
+      <div class="hub-card" onclick="showMyProgress();">
+        <div class="hub-icon">⭐</div>
+        <div style="font-size:1.5em;font-weight:bold;">我的進度</div>
+        <div style="opacity:0.8;">睇下我讀過咩</div>
+      </div>
+    </div>
+
+    <!-- 老師設定面板（預設折疊） -->
+    <!-- 老師入口（細字，避免學生混淆） -->
+    <div style="margin-top:30px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.15);text-align:center;">
+      <button onclick="enterTeacherMode()" style="background:transparent;color:rgba(255,255,255,0.5);font-size:0.9em;padding:8px 16px;min-height:36px;border:1px solid rgba(255,255,255,0.2);border-radius:8px;">🔧 老師模式</button>
+    </div>
+
+    <button onclick="goTo('home')" style="margin-top:20px;background:#666;">🏠 返回首頁</button>
+    <div id="engineIndicator" style="margin-top:14px;font-size:0.85em;color:rgba(255,255,255,0.5);"></div>
+  </div>
+</div>
+
+<!-- ASSESSMENT PAGE -->
+<div id="assessment" class="page">
+  <h2>📖 朗讀評估</h2>
+  <div id="assessmentContent" style="max-width:700px;margin:0 auto;"></div>
+  <button onclick="updateHubStatus();goTo('hub')" style="margin:30px auto;display:block;background:#666;">🏠 返回中心</button>
+</div>
+
+<!-- MY PROGRESS (student-facing) -->
+<div id="myProgress" class="page">
+  <div id="myProgressContent" style="max-width:800px;margin:40px auto;padding:0 20px;"></div>
+</div>
+
+<!-- TEACHER WORKSPACE (isolated from student flow) -->
+<div id="teacher" class="page" style="background:linear-gradient(135deg,#1a1a2e,#2d1b4e);min-height:100vh;">
+  <div style="max-width:900px;margin:0 auto;padding:20px;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+      <h1 style="color:#f59e0b;font-size:1.8em;margin:0;">🔧 老師工作台</h1>
+      <div style="flex:1;"></div>
+      <button onclick="exitTeacherMode()" style="background:#666;font-size:1em;padding:10px 20px;min-height:44px;border-radius:10px;">🚪 退出</button>
+    </div>
+    <!-- Tab nav -->
+    <div style="display:flex;gap:8px;margin-bottom:20px;border-bottom:2px solid rgba(255,255,255,0.2);flex-wrap:wrap;">
+      <button id="tchTabDashboardBtn" onclick="tchSwitchTab('dashboard')" style="flex:1;min-width:120px;background:#7c3aed;font-size:1em;padding:12px;border-radius:8px 8px 0 0;min-height:48px;">📊 Dashboard</button>
+      <button id="tchTabStudentsBtn" onclick="tchSwitchTab('students')" style="flex:1;min-width:120px;background:#444;font-size:1em;padding:12px;border-radius:8px 8px 0 0;min-height:48px;">👨‍🎓 學生</button>
+      <button id="tchTabEditBtn" onclick="tchSwitchTab('edit')" style="flex:1;min-width:120px;background:#444;font-size:1em;padding:12px;border-radius:8px 8px 0 0;min-height:48px;">📝 文章</button>
+      <button id="tchTabSettingsBtn" onclick="tchSwitchTab('settings')" style="flex:1;min-width:120px;background:#444;font-size:1em;padding:12px;border-radius:8px 8px 0 0;min-height:48px;">⚙️ 系統</button>
+    </div>
+    <div id="tchTabDashboard" class="tch-tab-content"></div>
+    <div id="tchTabStudents" class="tch-tab-content" style="display:none;"></div>
+    <div id="tchTabEdit" class="tch-tab-content" style="display:none;"></div>
+    <div id="tchTabSettings" class="tch-tab-content" style="display:none;"></div>
+  </div>
+</div>
+
+<!-- RESULT -->
+<div id="result" class="page">
+  <div class="result-card" style="text-align:center;">
+    <h2>評分結果</h2>
+    <div id="resultWord" style="font-size:2.2em;margin:20px 0;color:#7c3aed;"></div>
+    <div class="score" id="resultScore"></div>
+    <div id="resultFeedback" style="font-size:1.4em;margin:20px 0;"></div>
+    <div id="resultAI" style="background:#f3e8ff;padding:16px;border-radius:16px;margin:20px 0;"></div>
+    <div style="display:flex;gap:8px;margin-top:20px;" id="resultActions">
+      <button onclick="retryCurrentPassage()" style="flex:1;background:#f59e0b;font-size:1.1em;padding:14px;">🔄 再讀一次</button>
+      <button onclick="showPassageSelector()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">📖 其他文章 →</button>
+    </div>
+    <button onclick="showCertModal()" style="margin-top:12px;background:#7c3aed;width:100%;font-size:1.1em;padding:14px;">🏆 睇我嘅證書</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<!-- Certificate Modal (view only, no print) -->
+<div id="certModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:10002;overflow:auto;">
+  <div id="certContent" style="max-width:600px;margin:30px auto;padding:20px;"></div>
+</div>
+
+<!-- Passage Edit Modal -->
+<div id="passageModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:10000;overflow:auto;">
+  <div style="background:#1a1a2e;border:3px solid #f59e0b;border-radius:20px;max-width:560px;margin:40px auto;padding:24px;color:#fff;">
+    <h3 id="passageModalTitle" style="color:#f59e0b;text-align:center;margin-bottom:20px;">✏️ 新增文章</h3>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <label style="font-size:1.1em;">
+        標題 <span style="color:#ef4444;">*</span>
+        <input id="pm_title" type="text" maxlength="50" style="width:100%;font-size:1.2em;padding:12px;border-radius:10px;border:2px solid #555;background:#222;color:#fff;">
+      </label>
+      <label style="font-size:1.1em;">
+        作者
+        <input id="pm_author" type="text" maxlength="50" style="width:100%;font-size:1.1em;padding:12px;border-radius:10px;border:2px solid #555;background:#222;color:#fff;">
+      </label>
+      <div style="display:flex;gap:12px;">
+        <label style="font-size:1.1em;flex:1;">
+          類型
+          <select id="pm_type" style="width:100%;font-size:1.1em;padding:12px;border-radius:10px;border:2px solid #555;background:#222;color:#fff;">
+            <option value="prose">📖 散文</option>
+            <option value="poetry">🪷 詩詞</option>
+          </select>
+        </label>
+        <label style="font-size:1.1em;flex:1;">
+          難度（星）
+          <select id="pm_difficulty" style="width:100%;font-size:1.1em;padding:12px;border-radius:10px;border:2px solid #555;background:#222;color:#fff;">
+            <option value="1">⭐ 易</option>
+            <option value="2">⭐⭐ 中</option>
+            <option value="3">⭐⭐⭐ 難</option>
+          </select>
+        </label>
+        <label style="font-size:1.1em;flex:1;">
+          錄音秒數
+          <input id="pm_audio" type="number" min="5" max="60" value="15" style="width:100%;font-size:1.1em;padding:12px;border-radius:10px;border:2px solid #555;background:#222;color:#fff;">
+        </label>
+      </div>
+      <label style="font-size:1.1em;">
+        文章內容 <span style="color:#ef4444;">*</span>
+        <textarea id="pm_text" rows="5" maxlength="500" style="width:100%;font-size:1.1em;padding:12px;border-radius:10px;border:2px solid #555;background:#222;color:#fff;resize:vertical;font-family:inherit;line-height:1.5;"></textarea>
+      </label>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:20px;">
+      <button onclick="savePassageFromModal()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">💾 儲存</button>
+      <button onclick="closePassageModal()" style="flex:1;background:#666;font-size:1.1em;padding:14px;">取消</button>
+    </div>
+  </div>
+</div>
+<!-- Student Edit Modal -->
+<div id="studentModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:10000;overflow:auto;">
+  <div style="background:#1a1a2e;border:3px solid #f59e0b;border-radius:20px;max-width:480px;margin:40px auto;padding:24px;color:#fff;">
+    <h3 id="studentModalTitle" style="color:#f59e0b;text-align:center;margin-bottom:20px;">👨‍🎓 新增學生</h3>
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <label style="font-size:1.1em;">
+        姓名 <span style="color:#ef4444;">*</span>
+        <input id="sm_name" type="text" maxlength="20" style="width:100%;font-size:1.2em;padding:12px;border-radius:10px;border:2px solid #555;background:#222;color:#fff;">
+      </label>
+      <label style="font-size:1.1em;">
+        頭像（揀一個 emoji）
+        <div id="sm_emoji_picker" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;">
+          <!-- populated by JS -->
+        </div>
+      </label>
+      <label style="font-size:1.1em;">
+        顏色
+        <input id="sm_color" type="color" value="#f59e0b" style="width:100%;height:50px;padding:4px;border-radius:10px;border:2px solid #555;background:#222;cursor:pointer;">
+      </label>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:20px;">
+      <button onclick="saveStudentFromModal()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">💾 儲存</button>
+      <button onclick="closeStudentModal()" style="flex:1;background:#666;font-size:1.1em;padding:14px;">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm modal -->
+<div id="confirmModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:10001;">
+  <div style="background:#1a1a2e;border:3px solid #f59e0b;border-radius:20px;max-width:480px;margin:120px auto;padding:24px;color:#fff;text-align:center;">
+    <p id="confirmMsg" style="font-size:1.2em;margin-bottom:20px;"></p>
+    <div style="display:flex;gap:12px;">
+      <button id="confirmYes" style="flex:1;background:#dc2626;font-size:1.1em;padding:14px;">確認</button>
+      <button onclick="closeConfirmModal()" style="flex:1;background:#666;font-size:1.1em;padding:14px;">取消</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// STATE
+let state = {
+  mode: 'student',  // 'student' | 'teacher'
+  currentStudentId: null,
+  currentPassage: null,
+  completed: { assessment: false },
+  autoTTS: true,
+  types: [],
+  passages: [],
+
+  // Students + progress (loaded from localStorage at init)
+  students: [],
+  progress: {},       // { [studentId]: progressObj }
+  // ASR engine selection (pluggable)
+  asrEngine: 'webspeech',  // 'webspeech' | 'whisper' | 'custom'
+  // Recording timeout in seconds (configurable by teacher for SEN students)
+  recordingTimeout: 4
+};
+
+// ================== SECURITY ==================
+// Escape HTML special chars — use this for ALL user content injected into innerHTML.
+function _e(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ================== ASR ENGINE LAYER ==================
+// Each engine implements: { id, name, transcribe(audioBlob?) → Promise<{text, confidence, raw}>, isAvailable() }
+// Score is computed uniformly after transcribe (Levenshtein-based) — no per-engine scoring.
+const _ASR_ENGINES = {
+  webspeech: {
+    id: 'webspeech',
+    name: 'Web Speech API',
+    description: '瀏覽器內建，廣東話支援較弱',
+    costEmoji: '🆓',
+    privacyEmoji: '🔓',
+    isAvailable() { return 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window; },
+    transcribe() { return new Promise((resolve, reject) => {
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const r = new SR();
+      r.lang = 'zh-HK';
+      r.continuous = false;
+      r.interimResults = false;
+      r.onresult = (ev) => resolve({
+        text: ev.results[0][0].transcript.trim(),
+        confidence: ev.results[0][0].confidence || 0.5,
+        raw: ev.results[0][0]
+      });
+      r.onerror = (ev) => reject(new Error('Speech error: ' + ev.error));
+      try { r.start(); } catch(e) { reject(e); }
+    }); }
+  },
+  whisper: {
+    id: 'whisper',
+    name: 'Whisper 本地（離線）',
+    description: 'iPad 內建模型，私隱零風險',
+    costEmoji: '🆓',
+    privacyEmoji: '🔒',
+    isAvailable() {
+      // Check for WebAssembly + Float32Array (needed by transformers.js)
+      return typeof WebAssembly !== 'undefined' && typeof Worker !== 'undefined';
+    },
+    _pipeline: null,
+    _pipelineLoading: null,
+    async _ensurePipeline(onProgress) {
+      if (this._pipeline) return this._pipeline;
+      if (this._pipelineLoading) return this._pipelineLoading;
+      this._pipelineLoading = (async () => {
+        if (onProgress) onProgress({ stage: 'cdn-load', message: '⏳ 載入 Transformers.js…' });
+        // Dynamic import — only loaded when first needed
+        const lib = await import(window.TRANSFORMERS_CDN);
+        if (onProgress) onProgress({ stage: 'model-load', message: '⏳ 下載 Whisper 模型（約 40MB，只需一次）…' });
+        const pipe = await lib.pipeline(
+          'automatic-speech-recognition',
+          'Xenova/whisper-tiny',
+          {
+            // q8 量化 — 適合 WASM
+            dtype: 'q8',
+            // Use WebGPU if available for speed; else fall back to WASM
+            device: typeof navigator !== 'undefined' && navigator.gpu ? 'webgpu' : 'wasm'
+          }
+        );
+        this._pipeline = pipe;
+        return pipe;
+      })();
+      return this._pipelineLoading;
+    },
+    async transcribe(audioBlob, onProgress) {
+      try {
+        const pipe = await this._ensurePipeline(onProgress);
+        if (onProgress) onProgress({ stage: 'preprocess', message: '⏳ 處理音訊…' });
+        // Convert audioBlob to 16kHz mono Float32Array
+        const audio = await _blobToFloat32(audioBlob);
+        if (onProgress) onProgress({ stage: 'transcribe', message: '⏳ Whisper 識別中…' });
+        // Cantonese: whisper doesn't have 'cantonese' code, but 'zh' works
+        // (model is multilingual). Add language hint to bias toward Chinese.
+        const result = await pipe(audio, {
+          language: 'chinese',  // closer to Cantonese than 'zh'
+          task: 'transcribe',
+          // Chunked for long audio (we send ~4s, so this is safe)
+          chunk_length_s: 30,
+          stride_length_s: 5
+        });
+        const text = (result && result.text) ? result.text.trim() : '';
+        return {
+          text,
+          confidence: 1,  // transformers.js doesn't expose confidence reliably
+          raw: result
+        };
+      } catch (e) {
+        console.error('Whisper transcribe error:', e);
+        return { text: '', confidence: 0, raw: { error: e.message, engineId: 'whisper' } };
+      }
+    }
+  },
+  custom: {
+    id: 'custom',
+    name: '自訂比對（聲紋 + pattern）',
+    description: '純本地，唔上載任何嘢',
+    costEmoji: '🆓',
+    privacyEmoji: '🔒',
+    isAvailable() { return typeof AudioContext !== 'undefined' || typeof webkitAudioContext !== 'undefined'; },
+    transcribe(audioBlob, onProgress) {
+      // Self-compare engine: returns empty text, scoring layer uses audio features instead
+      return new Promise((resolve) => {
+        if (onProgress) onProgress({ stage: 'analyze', message: '分析聲音特徵…' });
+        setTimeout(() => {
+          resolve({
+            text: '',
+            confidence: 0,
+            raw: { customMode: true, engineId: 'custom', audioBlob }
+          });
+        }, 600);
+      });
+    }
+  }
+};
+
+const _AVATAR_EMOJIS = ['🌟','🐯','🐻','🦁','🐼','🐨','🐸','🐵','🦊','🐰','🐱','🐶','🦄','🐙','🐢','🦋','🌸','🌈','🍎','🍇','⚽','🎨','🎵','🚀'];
+
+// ================== AUDIO PREPROCESSING ==================
+// Convert any audio Blob (webm/ogg/wav) → 16kHz mono Float32Array (what Whisper expects)
+async function _blobToFloat32(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const audioCtx = new AudioCtx();
+  try {
+    // decodeAudioData works for webm/ogg/wav/mp4 in modern browsers
+    const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+    // Resample to 16kHz mono
+    const targetSampleRate = 16000;
+    const numSamples = Math.ceil(decoded.duration * targetSampleRate);
+    const offlineCtx = new OfflineAudioContext(1, numSamples, targetSampleRate);
+    const source = offlineCtx.createBufferSource();
+    source.buffer = decoded;
+    source.connect(offlineCtx.destination);
+    source.start(0);
+    const rendered = await offlineCtx.startRendering();
+    return rendered.getChannelData(0);  // Float32Array
+  } finally {
+    audioCtx.close();
+  }
+}
+
+function speak(text) {
+  if ('speechSynthesis' in window) {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'zh-HK';
+    u.rate = 0.85;
+    speechSynthesis.speak(u);
+  }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 1800);
+}
+
+function goTo(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById(page).classList.add('active');
+  // Update engine indicator
+  const ind = document.getElementById('engineIndicator');
+  if (ind && page === 'hub') {
+    const e = _ASR_ENGINES[state.asrEngine];
+    if (e) {
+      let extra = '';
+      if (e.id === 'whisper') {
+        extra = _ASR_ENGINES.whisper._pipeline ? '（已預載）' : '（首次需下載 ~40MB）';
+      }
+      ind.textContent = `🎙 評估引擎：${e.name} ${e.privacyEmoji}${extra}`;
+    }
+  }
+}
+
+function updateProgress() {
+  const dots = document.getElementById('progressDots');
+  const items = [
+    {id:'assessment', label:'📖'}
+  ];
+  dots.innerHTML = items.map(item => {
+    const done = state.completed[item.id];
+    const cls = done ? 'done' : (item.id === 'assessment' && !done ? 'current' : '');
+    return `<div class="progress-dot ${cls}">${item.label}</div>`;
+  }).join('');
+}
+
+function updateHubStatus() {
+  const done = '<span style="background:#22c55e;color:#fff;padding:4px 12px;border-radius:20px;font-size:0.9em;">✅ 完成</span>';
+  const locked = '<span style="background:rgba(255,255,255,0.2);padding:4px 12px;border-radius:20px;font-size:0.9em;">🔓 可選</span>';
+  document.getElementById('hubAssessment').innerHTML = state.completed.assessment ? done : locked;
+  updateProgress();
+}
+
+function startAssessment() {
+  showPassageSelector();
+}
+
+// ================== PASSAGE SELECTOR ==================
+function showPassageSelector() {
+  const container = document.getElementById('assessmentContent');
+  const types = state.types;
+  const passages = state.passages;
+  if (passages.length === 0) {
+    container.innerHTML = `<div style="text-align:center;padding:40px;color:#f59e0b;font-size:1.3em;">
+      尚未有任何文章<br>請先到老師設定加入文章
+      <button onclick="enterTeacherMode()" style="margin-top:16px;background:#555;font-size:1em;padding:12px 24px;">🔧 老師設定</button>
+      <br><button onclick="goTo('hub')" style="margin-top:12px;background:#666;font-size:1em;padding:12px 24px;">返回</button>
+    </div>`;
+    goTo('assessment');
+    return;
+  }
+  // Group passages by type
+  const byType = {};
+  passages.forEach(p => {
+    if (!byType[p.type]) byType[p.type] = [];
+    byType[p.type].push(p);
+  });
+
+  let html = `<div style="max-width:700px;margin:0 auto;text-align:center;">
+    <h3 style="color:#f59e0b;margin-bottom:8px;">📖 選擇朗讀文章</h3>
+    <p style="color:rgba(255,255,255,0.7);font-size:1em;margin-bottom:24px;">點擊文章卡開始朗讀評估</p>`;
+
+  // Type filter buttons
+  const allEnabled = types.filter(t => t.enabled);
+  if (allEnabled.length > 1) {
+    html += `<div style="display:flex;gap:8px;justify-content:center;margin-bottom:20px;flex-wrap:wrap;">`;
+    html += `<button onclick="filterPassages('all')" id="filterBtn_all" style="background:#7c3aed;font-size:1em;padding:10px 18px;min-height:48px;border-radius:20px;">全部</button>`;
+    allEnabled.forEach(t => {
+      html += `<button onclick="filterPassages('${_e(t.id)}')" id="filterBtn_${_e(t.id)}" style="background:#444;font-size:1em;padding:10px 18px;min-height:48px;border-radius:20px;">${_e(t.icon || '')} ${_e(t.label)}</button>`;
+    });
+    html += `</div>`;
+  }
+
+  // Passage grid
+  html += `<div id="passageGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;max-width:700px;margin:0 auto;">`;
+  passages.forEach(p => {
+    const type = types.find(t => t.id === p.type);
+    const stars = '⭐'.repeat(p.difficulty || 1) + '☆'.repeat(3 - (p.difficulty || 1));
+    const typeLabel = type ? `${type.icon || ''} ${type.label}` : p.type;
+    const typeColor = p.type === 'poetry' ? '#7c3aed' : '#22c55e';
+    const pShort = p.text.length > 40 ? p.text.slice(0, 40) + '…' : p.text;
+    html += `
+      <div class="vocab-card" data-passage-id="${_e(p.id)}" style="cursor:pointer;border-color:${typeColor};">
+        <div style="background:${typeColor};color:#fff;font-size:0.85em;padding:4px 12px;border-radius:20px;display:inline-block;margin-bottom:8px;">${typeLabel}</div>
+        <div style="font-size:1.8em;font-weight:bold;color:#7c3aed;margin:8px 0;">${_e(p.title)}</div>
+        <div style="color:#666;font-size:1em;margin-bottom:6px;">${_e(p.author || '')}</div>
+        <div style="color:#f59e0b;font-size:1.1em;margin-bottom:8px;">${stars}</div>
+        <div style="color:#555;font-size:0.95em;background:#f9f9f9;padding:10px;border-radius:10px;line-height:1.4;">${_e(pShort)}</div>
+        <div style="color:#999;font-size:0.85em;margin-top:6px;">⏱ 約 ${p.audioSeconds || 10} 秒</div>
+      </div>`;
+  });
+  html += `</div>`;
+
+  html += `<button onclick="goTo('hub')" style="margin-top:24px;background:#666;width:80%;">🏠 返回中心</button>`;
+  html += `</div>`;
+
+  container.innerHTML = html;
+
+  // Event delegation for passage cards
+  container.querySelectorAll('.vocab-card[data-passage-id]').forEach(card => {
+    card.addEventListener('click', () => {
+      const pid = card.dataset.passageId;
+      const passage = state.passages.find(p => p.id === pid);
+      if (passage) startPassageReading(passage);
+    });
+  });
+
+  goTo('assessment');
+}
+
+let _currentFilter = 'all';
+function filterPassages(typeId) {
+  _currentFilter = typeId;
+  // Update button styles
+  document.querySelectorAll('[id^="filterBtn_"]').forEach(btn => {
+    const bid = btn.id.replace('filterBtn_', '');
+    btn.style.background = (bid === typeId) ? '#7c3aed' : '#444';
+  });
+  // Show/hide cards
+  document.querySelectorAll('#passageGrid .vocab-card').forEach(card => {
+    if (typeId === 'all') {
+      card.style.display = '';
+    } else {
+      const p = state.passages.find(pp => pp.id === card.dataset.passageId);
+      card.style.display = (p && p.type === typeId) ? '' : 'none';
+    }
+  });
+}
+
+function startPassageReading(passage) {
+  state.currentPassage = passage;
+  const container = document.getElementById('assessmentContent');
+  const type = state.types.find(t => t.id === passage.type);
+  const typeLabel = type ? `${type.icon || ''} ${type.label}` : passage.type;
+  const typeColor = passage.type === 'poetry' ? '#7c3aed' : '#22c55e';
+  const stars = '⭐'.repeat(passage.difficulty || 1) + '☆'.repeat(3 - (passage.difficulty || 1));
+
+  container.innerHTML = `
+    <div style="max-width:700px;margin:0 auto;text-align:center;">
+      <div style="background:${typeColor};color:#fff;font-size:0.9em;padding:6px 16px;border-radius:20px;display:inline-block;margin-bottom:12px;">${typeLabel}</div>
+      <h2 style="color:#f59e0b;font-size:2em;margin-bottom:4px;">${_e(passage.title)}</h2>
+      <div style="color:#666;font-size:1.1em;margin-bottom:8px;">${_e(passage.author || '')} ${stars}</div>
+
+      <!-- Passage display -->
+      <div style="background:#fff;color:#1a1a2e;border:4px solid ${typeColor};border-radius:20px;padding:24px;margin:20px 0;text-align:left;max-height:300px;overflow-y:auto;line-height:2;font-size:1.5em;">
+        ${_e(passage.text).split('').map(c => c === '，' || c === '。' || c === '！' || c === '？' || c === '、' ? `<span style="color:#999;">${c}</span>` : c).join('')}
+      </div>
+
+      <!-- TTS demo -->
+      <button id="speakPassageBtn" style="background:#0ea5e9;width:100%;margin-bottom:12px;">
+        🔊 示範朗讀
+      </button>
+
+      <!-- Recording area -->
+      <div id="recordingArea" style="margin:16px 0;">
+        <button id="startRecBtn" style="background:#ef4444;width:100%;font-size:1.8em;padding:24px;border-radius:20px;min-height:100px;" onclick="startRecording()">
+          🎤 開始朗讀
+        </button>
+        <div id="recordingStatus" style="text-align:center;margin-top:16px;font-size:1.2em;color:#f59e0b;min-height:60px;"></div>
+      </div>
+
+      <button onclick="showPassageSelector()" style="margin-top:16px;background:#666;width:100%;">← 選擇其他文章</button>
+    </div>
+  `;
+
+  // TTS button
+  document.getElementById('speakPassageBtn').addEventListener('click', () => {
+    speak(passage.text);
+  });
+
+  goTo('assessment');
+}
+
+let recognition;
+let _currentAudioBlob = null;
+
+function startRecording() {
+  const status = document.getElementById('recordingStatus');
+  const engine = _ASR_ENGINES[state.asrEngine] || _ASR_ENGINES.webspeech;
+  const passage = state.currentPassage;
+  // Use passage-specific timeout (default 15s for prose, 10s for poetry)
+  const timeout = passage && passage.audioSeconds ? passage.audioSeconds : 15;
+  state.recordingTimeout = timeout;
+
+  if (!engine.isAvailable()) {
+    status.innerHTML = '❌ 此裝置唔支援 ' + engine.name;
+    return;
+  }
+
+  status.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0;">
+      <div style="font-size:1.4em;color:#ef4444;font-weight:bold;">🔴 錄音中</div>
+      <div style="width:100%;max-width:320px;height:20px;background:rgba(255,255,255,0.15);border-radius:10px;overflow:hidden;position:relative;">
+        <div id="recCountdownBar" style="height:100%;background:linear-gradient(90deg,#ef4444,#f59e0b);border-radius:10px;width:100%;transition:width 0.1s linear;"></div>
+      </div>
+      <div style="font-size:1.6em;font-weight:bold;color:#f59e0b;" id="recCountdownNum">${timeout}</div>
+      <div style="font-size:1em;color:rgba(255,255,255,0.7);">大聲朗讀文章 👄</div>
+    </div>`;
+  _startCountdownBar(timeout);
+
+  // For non-WebSpeech engines, we use MediaRecorder to capture audio blob
+  if (engine.id === 'webspeech') {
+    if (!('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
+      status.innerHTML = '❌ 請用 Chrome（Safari 支援有限）';
+      return;
+    }
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognition = new SpeechRec();
+    recognition.lang = 'zh-HK';
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    try { recognition.start(); } catch (e) {
+      console.error(e);
+      status.innerHTML = '❌ 無法啟動錄音，請檢查權限';
+      return;
+    }
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript.trim();
+      status.innerHTML = `你讀咗：${_e(transcript)}`;
+      scorePassage(transcript);
+    };
+    recognition.onerror = (event) => {
+      console.error('Speech error:', event.error);
+      let msg = '❌ 錄音出錯';
+      if (event.error === 'not-allowed') msg = '❌ 請允許麥克風權限';
+      else if (event.error === 'network') msg = '❌ 需要網絡連接';
+      else if (event.error === 'no-speech') msg = '❌ 冇聽到聲音，請大聲啲';
+      else if (event.error === 'audio-capture') msg = '❌ 麥克風問題，請檢查';
+      else if (event.error === 'service-not-allowed') msg = '❌ 瀏覽器不支援，請用 Chrome';
+      else if (event.error === 'aborted') msg = '❌ 已取消，請再試';
+      else msg = '❌ 請大聲啲或換個安靜地方';
+      status.innerHTML = msg + '，請再試';
+    };
+    recognition.onend = () => {
+      _stopCountdownBar();
+      if (status.innerHTML.includes('錄音中')) status.innerHTML = '錄音結束';
+    };
+  } else {
+    // Whisper / Custom: use MediaRecorder to capture audio blob
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      status.innerHTML = '❌ 此瀏覽器不支援錄音';
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      const recorder = new MediaRecorder(stream);
+      const chunks = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        _currentAudioBlob = blob;
+        try {
+          const result = await engine.transcribe(blob, (progress) => {
+            status.innerHTML = '⏳ ' + (progress.message || '處理中…');
+          });
+          // If engine returned text, score it. If empty (mock/whisper not implemented), fall back.
+if (result.text) {
+            status.innerHTML = `你讀咗：${_e(result.text)}`;
+            scorePassage(result.text, { engine: engine.id, audioBlob: blob, raw: result.raw });
+          } else {
+            // Engine returned no text (e.g. whisper not yet implemented, or custom mode)
+            if (engine.id === 'custom') {
+              status.innerHTML = '🎤 自訂模式：分析聲音特徵中…';
+              const customScore = await _customScoreAudio(blob, state.currentPassage);
+              scorePassage('', { engine: 'custom', customScore, audioBlob: blob });
+            } else {
+              status.innerHTML = `⚠️ ${engine.name} 未能識別。請用 Web Speech 或輸入你讀嘅文字：`;
+              _promptManualPassageInput(status, state.currentPassage);
+            }
+          }
+          }
+        } catch (e) {
+          console.error(e);
+          status.innerHTML = '❌ 引擎錯誤：' + e.message;
+        }
+      };
+      recorder.start();
+      // Auto-stop after configured seconds (configurable for SEN students)
+      setTimeout(() => {
+        _stopCountdownBar();
+        if (recorder.state === 'recording') recorder.stop();
+      }, state.recordingTimeout * 1000);
+    }).catch(err => {
+      status.innerHTML = '❌ 麥克風權限被拒：' + err.message;
+    });
+  }
+}
+
+function _promptManualPassageInput(status, passage) {
+  // Fallback: ask student what they read (text input)
+  const txt = prompt(`你讀嘅文章：${passage.title}\n\n輸入你讀咗嘅文字（粵語/普通話皆可）：`);
+  if (txt === null) {
+    status.innerHTML = '已取消';
+    return;
+  }
+  status.innerHTML = `你讀咗：${_e(txt)}`;
+  scorePassage(txt, { engine: 'manual' });
+}
+
+// Visual countdown bar + number for recording timeout
+let _countdownTimer = null;
+function _startCountdownBar(seconds) {
+  seconds = seconds || state.recordingTimeout;
+  const bar = document.getElementById('recCountdownBar');
+  const num = document.getElementById('recCountdownNum');
+  if (!bar || !num) return;
+  const totalMs = seconds * 1000;
+  const startTime = Date.now();
+  const update = () => {
+    const elapsed = Date.now() - startTime;
+    const remaining = Math.max(0, totalMs - elapsed);
+    const pct = (remaining / totalMs) * 100;
+    if (bar) bar.style.width = pct + '%';
+    const secLeft = Math.ceil(remaining / 1000);
+    if (num) num.textContent = secLeft;
+    if (remaining <= 0) {
+      if (num) num.textContent = '0';
+      return;
+    }
+    _countdownTimer = requestAnimationFrame(update);
+  };
+  _countdownTimer = requestAnimationFrame(update);
+}
+
+function _stopCountdownBar() {
+  if (_countdownTimer) { cancelAnimationFrame(_countdownTimer); _countdownTimer = null; }
+}
+async function _customScoreAudio(audioBlob, passage) {
+  try {
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioCtx();
+    const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+    audioCtx.close();
+
+    const channel = decoded.getChannelData(0);
+    const duration = decoded.duration;
+    let sumSq = 0, peak = 0, zcr = 0;
+    for (let i = 0; i < channel.length; i++) {
+      const v = channel[i];
+      sumSq += v * v;
+      if (Math.abs(v) > peak) peak = Math.abs(v);
+      if (i > 0 && Math.sign(channel[i-1]) !== Math.sign(v)) zcr++;
+    }
+    const rms = Math.sqrt(sumSq / channel.length);
+    const expected = passage && passage.audioSeconds ? passage.audioSeconds : 12;
+    const durationMatch = Math.max(0, 1 - Math.abs(duration - expected) / Math.max(duration, expected));
+    const energyMatch = rms > 0.01 ? 0.8 : 0.4;
+    const score = Math.round(Math.min(100, Math.max(0, energyMatch * 50 + durationMatch * 40 + (peak > 0.05 ? 10 : 0))));
+    return { score, duration, rms, peak, durationMatch, energyMatch };
+  } catch (e) {
+    console.warn('custom scoring failed', e);
+    return { score: 60, error: e.message };
+  }
+}
+
+function _getAudioBaseline(word) {
+  try {
+    const all = JSON.parse(localStorage.getItem('yueAudioBaselines') || '{}');
+    return all[word] || {};
+  } catch(e) { return {}; }
+}
+
+function _updateAudioBaseline(word, features) {
+  try {
+    const all = JSON.parse(localStorage.getItem('yueAudioBaselines') || '{}');
+    const existing = all[word];
+    if (existing) {
+      // EMA blend with new measurement
+      existing.duration = existing.duration * 0.7 + features.duration * 0.3;
+      existing.rms = existing.rms * 0.7 + features.rms * 0.3;
+      existing.peak = existing.peak * 0.7 + features.peak * 0.3;
+      existing.samples = (existing.samples || 0) + 1;
+    } else {
+      all[word] = { ...features, samples: 1 };
+    }
+    localStorage.setItem('yueAudioBaselines', JSON.stringify(all));
+  } catch(e) {}
+}
+
+function scorePassage(transcript, opts) {
+  opts = opts || {};
+  const p = state.currentPassage;
+  const target = p.text || '';
+  let aiScore, feedback, scoringMethod;
+
+  if (opts.engine === 'custom' && opts.customScore) {
+    aiScore = opts.customScore.score;
+    const dur = opts.customScore.duration ? opts.customScore.duration.toFixed(1) : '?';
+    feedback = aiScore >= 85 ? '做得好！' : aiScore >= 60 ? '唔錯！繼續努力～' : '再嚟多次！';
+    scoringMethod = 'custom-audio';
+  } else {
+    // String-match scoring: Levenshtein distance + coverage
+    const clean = (s) => s.replace(/[，。！？、\s\n\r]/g, "").toLowerCase();
+    const tClean = clean(target);
+    const uClean = clean(transcript);
+
+    const similarity = calculateSimilarity(uClean, tClean);
+    const bonus = (uClean.includes(tClean) || tClean.includes(uClean)) ? 20 : 0;
+
+    // Coverage: how many characters of the passage were read
+    const targetChars = [...tClean];
+    const userChars = [...uClean];
+    const overlap = targetChars.filter(c => userChars.includes(c)).length;
+    const coverage = tClean.length > 0 ? overlap / tClean.length : 0;
+    const overlapBonus = overlap * 15;
+
+    // First-match bonus
+    const firstMatch = (targetChars[0] && userChars[0] && targetChars[0] === userChars[0]) ? 10 : 0;
+
+    // Combined score: similarity (40%) + coverage bonus (50%) + first-match (10%)
+    aiScore = Math.min(100, Math.floor(similarity * 40 + coverage * 50 + overlapBonus * 0.1 + firstMatch + bonus));
+    feedback = aiScore >= 85 ? '做得好！朗讀好流暢！' : aiScore >= 60 ? '唔錯！繼續努力～' : '再試一次，你可以嘅！';
+    scoringMethod = 'passage-match';
+  }
+
+  _recordPassageAttempt(p.id, p.title, aiScore, transcript);
+
+  // show result
+  goTo('result');
+  const tier = aiScore >= 90 ? { label: '金', color: '#ffd700', emoji: '🥇' } : aiScore >= 75 ? { label: '銀', color: '#c0c0c0', emoji: '🥈' } : aiScore >= 60 ? { label: '銅', color: '#cd7f32', emoji: '🥉' } : { label: '參與', color: '#7c3aed', emoji: '🌟' };
+
+  const resultCard = document.querySelector('#result .result-card') || document.getElementById('result');
+  document.getElementById('resultWord').textContent = p.title;
+  document.getElementById('resultScore').textContent = aiScore + '/100';
+  document.getElementById('resultScore').style.color = tier.color;
+  document.getElementById('resultFeedback').textContent = feedback;
+  document.getElementById('resultAI').innerHTML = `
+    <div style="margin-bottom:10px;"><b>評分：</b>${aiScore} 分（${tier.emoji} ${tier.label}獎）</div>
+    <div style="margin-bottom:6px;"><b>你讀：</b>${_e(transcript || '（自訂模式）')}</div>
+    <div style="margin-bottom:6px;"><b>文章：</b>${_e(target)}</div>
+    <div style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜方法：${_e(scoringMethod)}</div>`;
+
+  // Update retry/next buttons
+  const resultActions = document.getElementById('resultActions');
+  if (resultActions) {
+    resultActions.innerHTML = `
+      <button onclick="retryCurrentPassage()" style="flex:1;background:#f59e0b;font-size:1.1em;padding:14px;">🔄 再讀一次</button>
+      <button onclick="showPassageSelector()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">📖 其他文章 →</button>`;
+  }
+
+  if (aiScore >= 80) {
+    showConfetti(15);
+  }
+}
+
+function retryCurrentPassage() {
+  if (state.currentPassage) startPassageReading(state.currentPassage);
+  else goTo('assessment');
+}
+
+function calculateSimilarity(a, b) {
+  if (a === b) return 1;
+  const longer = a.length > b.length ? a : b;
+  const shorter = a.length > b.length ? b : a;
+  if (longer.length === 0) return 1;
+  return (longer.length - editDistance(longer, shorter)) / longer.length;
+}
+
+function editDistance(a, b) {
+  const dp = Array(b.length + 1).fill(null).map(() => Array(a.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) dp[0][i] = i;
+  for (let j = 0; j <= b.length; j++) dp[j][0] = j;
+  for (let j = 1; j <= b.length; j++) {
+    for (let i = 1; i <= a.length; i++) {
+      dp[j][i] = Math.min(
+        dp[j-1][i] + 1,
+        dp[j][i-1] + 1,
+        dp[j-1][i-1] + (a[i-1] === b[j-1] ? 0 : 1)
+      );
+    }
+  }
+  return dp[b.length][a.length];
+}
+
+function showCertModal() {
+  const sid = state.currentStudentId;
+  const cur = state.students.find(s => s.id === sid);
+  const studentName = cur ? cur.name : '同學';
+  const studentAvatar = cur ? (cur.avatar || '🌟') : '🌟';
+  const passage = state.currentPassage;
+  const passageTitle = passage ? passage.title : '朗讀評估';
+  const passageType = passage ? (state.types.find(t => t.id === passage.type) || { label: passage.type, icon: '📖' }) : { label: '朗讀', icon: '📖' };
+
+  // Get last score from progress
+  const p = sid ? (state.progress[sid] || {}) : {};
+  const records = p.records || [];
+  const lastRecord = records.length > 0 ? records[records.length - 1] : null;
+  const score = lastRecord ? lastRecord.score : 0;
+  const best = records.length > 0 ? Math.max(...records.map(r => r.score)) : score;
+
+  let tierLabel = '參與', tierEmoji = '🌟', tierColor = '#7c3aed';
+  if (score >= 90) { tierLabel = '金'; tierEmoji = '🥇'; tierColor = '#ffd700'; }
+  else if (score >= 75) { tierLabel = '銀'; tierEmoji = '🥈'; tierColor = '#c0c0c0'; }
+  else if (score >= 60) { tierLabel = '銅'; tierEmoji = '🥉'; tierColor = '#cd7f32'; }
+
+  const achievements = [];
+  if (records.length >= 5) achievements.push({ emoji: '📚', label: '勤讀' });
+  if (best >= 80) achievements.push({ emoji: '⭐', label: '高分' });
+  if (records.length >= 10) achievements.push({ emoji: '🏆', label: '持久' });
+
+  const cert = document.getElementById('certContent');
+  cert.innerHTML = `
+    <div style="background:linear-gradient(135deg,#fffbeb,#fef3c7);border:6px solid ${tierColor};border-radius:24px;padding:32px 24px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.3);position:relative;overflow:hidden;">
+      <div style="font-size:5em;margin-bottom:8px;">${studentAvatar}</div>
+      <div style="font-size:1em;color:#92400e;letter-spacing:4px;font-weight:bold;margin-bottom:8px;">🏆 朗 讀 評 分 證 書 🏆</div>
+
+      <div style="border-top:3px solid ${tierColor};border-bottom:3px solid ${tierColor};padding:20px 0;margin:16px 0;">
+        <div style="font-size:1em;color:#78350f;margin-bottom:8px;">茲 證 明</div>
+        <div style="font-size:2.5em;font-weight:bold;color:#92400e;margin:8px 0;">${studentName}</div>
+        <div style="font-size:1.1em;color:#78350f;margin-top:8px;">完成 ${passageType.icon} ${passageTitle} 朗讀評估</div>
+      </div>
+
+      <div style="background:rgba(255,255,255,0.5);border-radius:16px;padding:16px;margin:16px 0;">
+        <div style="display:flex;justify-content:space-around;flex-wrap:wrap;gap:12px;">
+          <div>
+            <div style="font-size:2.2em;font-weight:bold;color:#f59e0b;">${score}</div>
+            <div style="font-size:0.85em;color:#92400e;">評分</div>
+          </div>
+          <div>
+            <div style="font-size:2.2em;font-weight:bold;color:#f59e0b;">${best}</div>
+            <div style="font-size:0.85em;color:#92400e;">最高分</div>
+          </div>
+          <div>
+            <div style="font-size:2.2em;font-weight:bold;color:#f59e0b;">${records.length}</div>
+            <div style="font-size:0.85em;color:#92400e;">朗讀次數</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin:16px 0;">
+        <div style="font-size:5em;margin-bottom:8px;">${tierEmoji}</div>
+        <div style="display:inline-block;background:${tierColor};color:#fff;padding:6px 20px;border-radius:24px;font-weight:bold;font-size:1.1em;letter-spacing:2px;">${tierLabel} 獎</div>
+      </div>
+
+      ${achievements.length > 0 ? `
+        <div style="margin:16px 0;">
+          <div style="font-size:0.95em;color:#92400e;margin-bottom:8px;">🏅 成就</div>
+          <div style="display:flex;justify-content:center;flex-wrap:wrap;gap:8px;">
+            ${achievements.map(a => `<div style="background:rgba(255,255,255,0.7);border-radius:12px;padding:6px 12px;font-size:1em;font-weight:bold;color:#92400e;">${a.emoji} ${a.label}</div>`).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      <div style="margin-top:20px;font-size:0.9em;color:#a16207;">📅 ${new Date().toLocaleDateString('zh-HK')}</div>
+      <div style="margin-top:8px;font-size:0.85em;color:#a16207;">朗讀評分 — 散文・詩詞</div>
+    </div>
+    <button onclick="closeCertModal()" style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;font-size:1.15em;padding:16px;width:100%;border-radius:14px;margin-top:16px;">✨ 收埋佢！</button>
+  `;
+  document.getElementById('certModal').style.display = 'block';
+  showConfetti(20);
+  speak('恭喜你！你做得好好！');
+}
+
+function closeCertModal() {
+  document.getElementById('certModal').style.display = 'none';
+}
+
+function showConfetti(count) {
+  for (let i=0; i<count; i++) {
+    const c = document.createElement('div');
+    c.style.cssText = `position:fixed;top:-10px;left:${Math.random()*100}vw;width:12px;height:12px;background:${['#f59e0b','#22c55e','#7c3aed'][i%3]};border-radius:50%;z-index:99999;animation:fall 2.5s linear forwards`;
+    document.body.appendChild(c);
+    setTimeout(() => c.remove(), 2600);
+  }
+}
+const style = document.createElement('style');
+style.textContent = `@keyframes fall { to { transform:translateY(100vh) rotate(720deg); opacity:0; } }`;
+document.head.appendChild(style);
+
+// ================== STUDENT "MY PROGRESS" PAGE (visual, low-text) ==================
+// Designed for SEN students: minimal text, maximum visual cues (emoji + colors + icons)
+function showMyProgress() {
+  const sid = state.currentStudentId || (state.students[0] ? state.students[0].id : null);
+  if (!sid) { showToast('⚠️ 尚未有學生資料'); return; }
+  const s = state.students.find(x => x.id === sid);
+  if (!s) return;
+  const p = state.progress[sid] || { byPassage: {}, records: [], totalAttempts: 0 };
+  const byPassage = p.byPassage || {};
+  const records = p.records || [];
+  const mastered = Object.entries(byPassage).filter(([_, w]) => w.bestScore >= 80);
+  const practicing = Object.entries(byPassage).filter(([_, w]) => w.bestScore >= 60 && w.bestScore < 80);
+  const struggling = Object.entries(byPassage).filter(([_, w]) => w.attempts >= 2 && w.bestScore < 60);
+  const avg = records.length > 0 ? Math.round(records.reduce((sum, x) => sum + x.score, 0) / records.length) : 0;
+  const stars = Math.min(5, Math.floor(mastered.length / 2));
+  const totalLearned = mastered.length + practicing.length + struggling.length;
+  const streak = _calcStreak(records);
+  const dailyCounts = _buildDailyCounts(records, 7);
+
+  // Map word → emoji for visual list
+  const emojiFor = (word) => {
+    const m = { '春天':'🌸', '夏天':'🌞', '秋天':'🍂', '冬天':'❄️', '季節':'🌗', '北風':'🌬️', '雪花':'❄️', '黃葉':'🍁',
+      '蝴蝶':'🦋', '游泳':'🏊', '燒烤':'🔥', '野餐':'🧺', '火鍋':'🍲',
+      '滴滴答答':'💧', '嘩啦嘩啦':'🌊', '叮叮咚咚':'🎵', '轟隆轟隆':'🚂', '呼呼':'💨' };
+    return m[word] || '📝';
+  };
+
+  const container = document.getElementById('myProgressContent');
+  container.innerHTML = `
+    <div style="text-align:center;padding:16px 0 8px;">
+      <div style="font-size:6em;line-height:1;">${s.avatar || '🌟'}</div>
+      <h1 style="color:#f59e0b;font-size:2em;margin:6px 0;">${s.name}</h1>
+      <div style="font-size:2.5em;margin:8px 0;letter-spacing:6px;">${'⭐'.repeat(stars)}${'☆'.repeat(5-stars)}</div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0;">
+      <div style="background:linear-gradient(135deg,rgba(124,58,237,0.4),rgba(124,58,237,0.2));border-radius:20px;padding:18px 8px;text-align:center;border:2px solid #7c3aed;">
+        <div style="font-size:2.8em;line-height:1;">🎤</div>
+        <div style="font-size:2.2em;font-weight:bold;color:#fff;margin:4px 0;">${p.totalAttempts || 0}</div>
+        <div style="font-size:0.85em;color:rgba(255,255,255,0.85);">練咗</div>
+      </div>
+      <div style="background:linear-gradient(135deg,rgba(245,158,11,0.4),rgba(245,158,11,0.2));border-radius:20px;padding:18px 8px;text-align:center;border:2px solid #f59e0b;">
+        <div style="font-size:2.8em;line-height:1;">${avg >= 80 ? '🌟' : avg >= 60 ? '👍' : '💪'}</div>
+        <div style="font-size:2.2em;font-weight:bold;color:#fff;margin:4px 0;">${avg}</div>
+        <div style="font-size:0.85em;color:rgba(255,255,255,0.85);">分數</div>
+      </div>
+      <div style="background:linear-gradient(135deg,rgba(34,197,94,0.4),rgba(34,197,94,0.2));border-radius:20px;padding:18px 8px;text-align:center;border:2px solid #22c55e;">
+        <div style="font-size:2.8em;line-height:1;">🏆</div>
+        <div style="font-size:2.2em;font-weight:bold;color:#fff;margin:4px 0;">${mastered.length}</div>
+        <div style="font-size:0.85em;color:rgba(255,255,255,0.85);">識讀</div>
+      </div>
+    </div>
+
+    ${streak > 0 ? `
+      <div style="background:linear-gradient(90deg,rgba(239,68,68,0.3),rgba(245,158,11,0.3));border-radius:16px;padding:14px;margin:12px 0;text-align:center;border:2px solid rgba(239,68,68,0.5);">
+        <div style="font-size:1.5em;">🔥 <b>${streak} 日</b> streak</div>
+      </div>` : ''}
+
+    ${mastered.length > 0 ? `
+      <div style="background:rgba(34,197,94,0.15);border:2px solid rgba(34,197,94,0.5);border-radius:16px;padding:16px;margin:12px 0;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+          <div style="font-size:2em;">✅</div>
+          <div style="font-size:1.3em;font-weight:bold;color:#22c55e;">朗讀成功（${mastered.length}篇）</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${mastered.map(([pid, info]) => {
+            const psg = state.passages.find(p => p.id === pid);
+            if (!psg) return '';
+            return `<div style="background:rgba(34,197,94,0.3);border:2px solid #22c55e;border-radius:12px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;">
+              <div style="font-weight:bold;font-size:1.1em;">📖 ${_e(psg.title)}</div>
+              <div style="color:#22c55e;font-weight:bold;">${info.bestScore}分</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>` : ''}
+
+    ${practicing.length > 0 ? `
+      <div style="background:rgba(245,158,11,0.15);border:2px solid rgba(245,158,11,0.5);border-radius:16px;padding:16px;margin:12px 0;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+          <div style="font-size:2em;">👍</div>
+          <div style="font-size:1.3em;font-weight:bold;color:#f59e0b;">繼續努力（${practicing.length}篇）</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${practicing.map(([pid, info]) => {
+            const psg = state.passages.find(p => p.id === pid);
+            if (!psg) return '';
+            return `<div style="background:rgba(245,158,11,0.3);border:2px solid #f59e0b;border-radius:12px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;">
+              <div style="font-weight:bold;font-size:1.1em;">📖 ${_e(psg.title)}</div>
+              <div style="color:#f59e0b;font-weight:bold;">${info.bestScore}分</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>` : ''}
+
+    ${struggling.length > 0 ? `
+      <div style="background:rgba(239,68,68,0.15);border:2px solid rgba(239,68,68,0.5);border-radius:16px;padding:16px;margin:12px 0;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+          <div style="font-size:2em;">💪</div>
+          <div style="font-size:1.3em;font-weight:bold;color:#ef4444;">多練習（${struggling.length}篇）</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${struggling.map(([pid, info]) => {
+            const psg = state.passages.find(p => p.id === pid);
+            if (!psg) return '';
+            return `<div style="background:rgba(239,68,68,0.3);border:2px solid #ef4444;border-radius:12px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;">
+              <div style="font-weight:bold;font-size:1.1em;">📖 ${_e(psg.title)}</div>
+              <div style="color:#ef4444;font-weight:bold;">${info.bestScore}分</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>` : ''}
+
+    ${totalLearned === 0 ? `
+      <div style="background:rgba(255,255,255,0.05);border-radius:20px;padding:30px 20px;margin:20px 0;text-align:center;">
+        <img src="assets/images/decorative/empty-mic.png" alt="" style="width:160px;height:160px;margin:0 auto 12px;display:block;">
+        <div style="font-size:1.3em;color:rgba(255,255,255,0.8);">撳掣開始啦！</div>
+      </div>
+    ` : ''}
+
+    <div style="background:rgba(255,255,255,0.05);border-radius:16px;padding:14px;margin:16px 0;">
+      <div style="font-size:1em;color:rgba(255,255,255,0.7);margin-bottom:8px;">📅 過去 7 日</div>
+      ${_renderStripHeatmap(dailyCounts, 7)}
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:20px;align-items:center;">
+      <button onclick="goTo('assessment');startAssessment();" style="background:linear-gradient(135deg,#22c55e,#16a34a);font-size:1.4em;padding:18px 32px;width:100%;max-width:340px;border-radius:20px;box-shadow:0 4px 12px rgba(34,197,94,0.4);">📖 開 始 朗 讀</button>
+      <button onclick="goTo('hub');" style="background:#666;font-size:1.05em;padding:14px 28px;width:100%;max-width:340px;border-radius:20px;">🏠 返 去</button>
+    </div>
+  `;
+  goTo('myProgress');
+}
+
+// INIT — fetch JSON data then restore session state
+async function init() {
+  // Load passage types + passages
+  try {
+    const resp = await fetch('data/passages.json');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    const freshTypes = data.types || [];
+    const freshPassages = data.passages || [];
+
+    const savedTypes = localStorage.getItem('yueTypes');
+    if (savedTypes) {
+      try {
+        const parsed = JSON.parse(savedTypes);
+        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
+          const savedById = {};
+          parsed.forEach(t => { savedById[t.id] = t; });
+          const reconciled = freshTypes.map(ft => {
+            const saved = savedById[ft.id];
+            if (saved) {
+              return { ...ft, ...saved, id: ft.id, passages: Array.isArray(saved.passages) ? saved.passages : (ft.passages || []) };
+            }
+            return ft;
+          });
+          parsed.forEach(p => {
+            if (!freshTypes.find(f => f.id === p.id)) reconciled.push(p);
+          });
+          state.types = reconciled;
+        } else {
+          state.types = freshTypes;
+        }
+      } catch(e) {
+        state.types = freshTypes;
+      }
+    } else {
+      state.types = freshTypes;
+    }
+
+    // Load passages: saved passages override fresh ones (teacher may have edited)
+    const savedPassages = localStorage.getItem('yuePassages');
+    if (savedPassages) {
+      try {
+        state.passages = JSON.parse(savedPassages);
+      } catch(e) {
+        state.passages = freshPassages;
+      }
+    } else {
+      state.passages = freshPassages;
+    }
+
+    const savedSettings = localStorage.getItem('yueAdminSettings');
+    if (savedSettings) {
+      try {
+        const overrides = JSON.parse(savedSettings);
+        state.types.forEach(t => {
+          if (overrides[t.id] !== undefined) t.enabled = overrides[t.id];
+        });
+      } catch(e) {}
+    }
+  } catch(e) {
+    console.warn('無法載入 data/passages.json', e);
+    const savedTypes = localStorage.getItem('yueTypes');
+    if (savedTypes) {
+      try { state.types = JSON.parse(savedTypes); } catch(e2) {}
+    } else {
+      state.types = [];
+    }
+    const savedPassages = localStorage.getItem('yuePassages');
+    if (savedPassages) {
+      try { state.passages = JSON.parse(savedPassages); } catch(e2) {}
+    } else {
+      state.passages = [];
+    }
+  }
+
+  // Load students + progress
+  try {
+    const sData = JSON.parse(localStorage.getItem('yueStudents') || '{}');
+    state.students = Array.isArray(sData.students) ? sData.students : [];
+  } catch(e) { state.students = []; }
+  if (state.students.length === 0) {
+    state.students = [{
+      id: 's_demo',
+      name: '示範同學',
+      avatar: '🌟',
+      color: '#f59e0b',
+      createdAt: new Date().toISOString()
+    }];
+    _persistStudents();
+  }
+  try {
+    state.progress = JSON.parse(localStorage.getItem('yueProgress') || '{}');
+  } catch(e) { state.progress = {}; }
+
+  setTimeout(() => { try { _seedDemoProgress(); } catch(e) { console.warn('[seed]', e); } }, 100);
+
+  const savedEngine = localStorage.getItem('yueAsrEngine');
+  if (savedEngine && _ASR_ENGINES[savedEngine]) {
+    state.asrEngine = savedEngine;
+  }
+
+  const savedTimeout = localStorage.getItem('yueRecordingTimeout');
+  if (savedTimeout) {
+    const t = parseInt(savedTimeout, 10);
+    if (!isNaN(t) && t >= 2 && t <= 60) state.recordingTimeout = t;
+  }
+
+  state.mode = 'student';
+  const lastStudent = localStorage.getItem('yueLastStudentId');
+  if (lastStudent && state.students.find(s => s.id === lastStudent)) {
+    state.currentStudentId = lastStudent;
+  }
+
+  _renderStudentGrid();
+  updateProgress();
+}
+
+// ================== LOGIN ==================
+// Render the student avatar grid on the home page.
+// Called at init and whenever students change.
+function _renderStudentGrid() {
+  const grid = document.getElementById('studentAvatarGrid');
+  if (!grid) return;
+  if (state.students.length === 0) {
+    grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;color:rgba(255,255,255,0.5);font-size:1.1em;padding:40px 0;">
+      尚未新增任何學生<br><span style="font-size:0.9em;">請先撳「老師模式」加入</span>
+    </div>`;
+    return;
+  }
+  // 3-col grid on desktop, 2-col on phone (handled by CSS @media)
+  grid.style.gridTemplateColumns = 'repeat(3, 1fr)';
+  grid.innerHTML = state.students.map(s => `
+    <div class="student-avatar-card" onclick="selectStudentCard('${_e(s.id)}')" style="border-color:${_e(s.color || '#f59e0b')};">
+      <span style="font-size:3.2em;display:block;line-height:1;">${_e(s.avatar || '🌟')}</span>
+      <div style="font-size:1.2em;font-weight:bold;margin-top:4px;">${_e(s.name)}</div>
+    </div>
+  `).join('');
+}
+
+// "係你嗎？" confirmation step before logging in.
+function selectStudentCard(studentId) {
+  const s = state.students.find(x => x.id === studentId);
+  if (!s) return;
+  const modal = document.getElementById('confirmCard');
+  document.getElementById('confirmCardEmoji').textContent = s.avatar || '🌟';
+  document.getElementById('confirmCardName').textContent = s.name;
+  document.getElementById('confirmCardYes').onclick = () => { modal.style.display = 'none'; _loginStudent(s); };
+  modal.style.display = 'flex';
+}
+
+function cancelCardLogin() {
+  document.getElementById('confirmCard').style.display = 'none';
+}
+
+function _loginStudent(student) {
+  state.currentStudentId = student.id;
+  state.mode = 'student';
+  localStorage.setItem('yueLastStudentId', student.id);
+  document.getElementById('hubGreeting').textContent = `👋 ${student.avatar || '🌟'} ${student.name}，準備好未？`;
+  goTo('hub');
+  showToast(`歡迎返嚟，${student.name}！`);
+}
+
+const _TEACHER_PASS_KEY = 'yueTeacherPassHash';
+
+async function _hashTeacherPass(pass) {
+  const data = new TextEncoder().encode(pass);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function enterTeacherMode() {
+  // First-time setup: ask teacher to set a password (min 6 chars)
+  let stored = localStorage.getItem(_TEACHER_PASS_KEY);
+  if (!stored) {
+    const pass = prompt('首次進入老師模式。請設定老師密碼（至少 6 個字元）：');
+    if (!pass) return;
+    if (pass.length < 6) { alert('密碼至少 6 個字元'); return; }
+    const confirm = prompt('再輸入一次確認：');
+    if (confirm !== pass) { alert('兩次輸入唔一致'); return; }
+    const hash = await _hashTeacherPass(pass);
+    localStorage.setItem(_TEACHER_PASS_KEY, hash);
+    showToast('✅ 老師密碼已設定');
+  } else {
+    // Existing: ask for password
+    const pass = prompt('請輸入老師密碼：');
+    if (!pass) return;
+    const hash = await _hashTeacherPass(pass);
+    if (hash !== stored) { alert('❌ 密碼唔啱'); return; }
+  }
+  state.mode = 'teacher';
+  goTo('teacher');
+  tchSwitchTab('dashboard');
+  showToast('🔧 老師模式');
+}
+
+function exitTeacherMode() {
+  state.mode = 'student';
+  goTo('home');
+  showToast('👋 已退出老師模式');
+}
+
+function adjustTimeout(delta) {
+  state.recordingTimeout = Math.max(2, Math.min(60, state.recordingTimeout + delta));
+  saveTimeout();
+}
+
+function saveTimeout() {
+  localStorage.setItem('yueRecordingTimeout', state.recordingTimeout);
+  // Re-render the timeout display in settings if it's open
+  const disp = document.getElementById('timeoutDisplay');
+  if (disp) disp.textContent = state.recordingTimeout + ' 秒';
+  // Update the quick-select button colours
+  [4, 6, 8].forEach(v => {
+    const btn = document.getElementById('timeoutBtn_' + v);
+    if (btn) btn.style.background = state.recordingTimeout === v ? '#22c55e' : '#444';
+  });
+  showToast('⏱ 錄音時長：' + state.recordingTimeout + ' 秒');
+}
+
+// Allow teacher to reset their password from the settings tab
+async function resetTeacherPassword() {
+  if (!confirm('確定重設老師密碼？')) return;
+  const pass = prompt('新密碼（至少 6 個字元）：');
+  if (!pass) return;
+  if (pass.length < 6) { alert('密碼至少 6 個字元'); return; }
+  const confirm = prompt('再輸入一次確認：');
+  if (confirm !== pass) { alert('兩次輸入唔一致'); return; }
+  const hash = await _hashTeacherPass(pass);
+  localStorage.setItem(_TEACHER_PASS_KEY, hash);
+  showToast('✅ 老師密碼已更新');
+}
+
+function tchSwitchTab(tab) {
+  const tabs = ['dashboard', 'students', 'edit', 'settings'];
+  tabs.forEach(t => {
+    const btn = document.getElementById('tchTab' + t.charAt(0).toUpperCase() + t.slice(1) + 'Btn');
+    const content = document.getElementById('tchTab' + t.charAt(0).toUpperCase() + t.slice(1));
+    if (btn) btn.style.background = (t === tab) ? '#7c3aed' : '#444';
+    if (content) content.style.display = (t === tab) ? 'block' : 'none';
+  });
+  if (tab === 'dashboard') renderTeacherDashboard();
+  if (tab === 'students') renderTeacherStudents();
+  if (tab === 'edit') renderTeacherEdit();
+  if (tab === 'settings') renderTeacherSettings();
+}
+
+function renderTeacherDashboard() {
+  document.getElementById('tchTabDashboard').innerHTML = '<div id="dashboardContent"></div>';
+  renderDashboard();
+}
+
+function renderTeacherStudents() {
+  document.getElementById('tchTabStudents').innerHTML = `
+    <p style="color:rgba(255,255,255,0.7);font-size:1em;margin-bottom:16px;">管理學生頭像、顏色，同埋匯出 / 匯入全班資料。</p>
+    <div id="studentList"></div>
+    <button onclick="addNewStudent()" style="margin-top:12px;width:100%;background:#7c3aed;font-size:1.05em;padding:12px;">＋ 新增學生</button>
+    <button onclick="reAddDemoStudent()" style="margin-top:8px;width:100%;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:44px;">🌟 加返示範同學</button>
+    <div style="border-top:2px solid rgba(255,255,255,0.2);margin-top:24px;padding-top:20px;">
+      <p style="color:rgba(255,255,255,0.7);font-size:0.95em;margin-bottom:12px;">📦 學生資料同進度可匯出 / 匯入，方便跨 iPad 同步。</p>
+      <div style="display:flex;gap:8px;">
+        <button onclick="exportStudentsJson()" style="flex:1;background:#0ea5e9;font-size:1em;padding:12px;min-height:50px;">⬇️ 匯出</button>
+        <button onclick="document.getElementById('importStudentsFile').click()" style="flex:1;background:#f59e0b;font-size:1em;padding:12px;min-height:50px;">⬆️ 匯入</button>
+        <input type="file" id="importStudentsFile" accept=".json,application/json" style="display:none;" onchange="importStudentsJson(event)">
+      </div>
+    </div>
+  `;
+  renderStudentList();
+}
+
+function renderTeacherEdit() {
+  document.getElementById('tchTabEdit').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+      <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;">
+        <p style="font-weight:bold;color:#f59e0b;margin-bottom:10px;">📋 設定（開啟分類）</p>
+        <div id="adminTypeList"></div>
+        <button onclick="saveAdminSettings()" style="margin-top:12px;width:100%;background:#22c55e;font-size:1.05em;padding:12px;">✅ 儲存</button>
+      </div>
+      <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;">
+        <p style="font-weight:bold;color:#f59e0b;margin-bottom:10px;">✏️ 文章（CRUD）</p>
+        <div id="passageList" style="max-height:500px;overflow:auto;"></div>
+        <button onclick="addNewPassage()" style="margin-top:8px;width:100%;background:#7c3aed;font-size:1em;padding:10px;">＋ 新增文章</button>
+      </div>
+    </div>
+    <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;">
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📦 備份/分享</p>
+      <div style="display:flex;gap:8px;margin-bottom:8px;">
+        <button onclick="exportPassagesJson()" style="flex:1;background:#0ea5e9;font-size:1em;padding:12px;min-height:50px;">⬇️ 匯出 JSON</button>
+        <button onclick="document.getElementById('importPassageFile').click()" style="flex:1;background:#f59e0b;font-size:1em;padding:12px;min-height:50px;">⬆️ 匯入 JSON</button>
+        <input type="file" id="importPassageFile" accept=".json,application/json" style="display:none;" onchange="importPassagesJson(event)">
+      </div>
+      <button onclick="resetToDefaultPassages()" style="width:100%;background:#dc2626;font-size:0.95em;padding:10px;min-height:44px;">⚠️ 重設為 data/passages.json 預設值</button>
+    </div>
+  `;
+  renderAdminTypeList();
+  renderPassageList();
+}
+
+function renderTeacherSettings() {
+  document.getElementById('tchTabSettings').innerHTML = `
+    <p style="color:rgba(255,255,255,0.7);font-size:1em;margin-bottom:16px;">揀學生評估用嘅語音引擎。所有引擎都免費；私隱視乎選擇。</p>
+    <div id="asrEngineList"></div>
+    <div id="whisperCacheStatus" style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-top:16px;display:none;">
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📦 Whisper 模型狀態</p>
+      <div id="whisperCacheContent" style="font-size:0.95em;color:rgba(255,255,255,0.8);"></div>
+      <button onclick="preloadWhisper()" style="margin-top:10px;width:100%;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:44px;">⬇️ 預先下載</button>
+      <button onclick="clearWhisperCache()" style="margin-top:8px;width:100%;background:#dc2626;font-size:0.95em;padding:10px;min-height:44px;">🗑 清除 cache</button>
+    </div>
+    <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-top:16px;">
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">⏱ 錄音時長設定</p>
+      <p style="color:rgba(255,255,255,0.7);font-size:0.95em;margin-bottom:12px;">每篇文章的錄音時限。輕度學生可以調長。</p>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <button onclick="adjustTimeout(-1)" style="background:#444;color:#fff;font-size:1.4em;padding:8px 18px;min-height:48px;border-radius:10px;min-width:52px;">−</button>
+        <div style="font-size:2em;font-weight:bold;color:#f59e0b;min-width:60px;text-align:center;" id="timeoutDisplay">${state.recordingTimeout} 秒</div>
+        <button onclick="adjustTimeout(1)" style="background:#444;color:#fff;font-size:1.4em;padding:8px 18px;min-height:48px;border-radius:10px;min-width:52px;">+</button>
+        <div style="display:flex;flex-direction:column;gap:4px;margin-left:8px;">
+          <button id="timeoutBtn_4" onclick="state.recordingTimeout=4;saveTimeout();" style="background:${state.recordingTimeout===4?'#22c55e':'#444'};color:#fff;font-size:0.85em;padding:6px 12px;min-height:36px;border-radius:8px;">預設 4秒</button>
+          <button id="timeoutBtn_6" onclick="state.recordingTimeout=6;saveTimeout();" style="background:${state.recordingTimeout===6?'#22c55e':'#444'};color:#fff;font-size:0.85em;padding:6px 12px;min-height:36px;border-radius:8px;">慢朗讀 6秒</button>
+          <button id="timeoutBtn_8" onclick="state.recordingTimeout=8;saveTimeout();" style="background:${state.recordingTimeout===8?'#22c55e':'#444'};color:#fff;font-size:0.85em;padding:6px 12px;min-height:36px;border-radius:8px;">超慢 8秒</button>
+        </div>
+      </div>
+    </div>
+    <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-top:16px;">
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📊 引擎使用統計</p>
+      <div id="asrStats" style="font-size:0.95em;color:rgba(255,255,255,0.8);"></div>
+    </div>
+    <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-top:16px;">
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">🔧 進階</p>
+      <button onclick="clearAudioBaselines()" style="background:#dc2626;width:100%;font-size:0.95em;padding:10px;min-height:44px;">🗑 清除自訂引擎聲紋 baseline</button>
+      <button onclick="resetTeacherPassword()" style="background:#f59e0b;width:100%;font-size:0.95em;padding:10px;min-height:44px;margin-top:8px;">🔑 重設老師密碼</button>
+    </div>
+  `;
+  renderAsrEngineList();
+}
+
+// ================== STUDENT CRUD ==================
+let _editingStudent = null; // { studentId } | null
+
+function addNewStudent(opts) {
+  opts = opts || {};
+  _editingStudent = { studentId: null };
+  document.getElementById('studentModalTitle').textContent = '👨‍🎓 新增學生';
+  document.getElementById('sm_name').value = opts.seed ? opts.seed.name : '';
+  document.getElementById('sm_color').value = opts.seed ? (opts.seed.color || '#f59e0b') : '#f59e0b';
+  _renderEmojiPicker(opts.seed ? opts.seed.avatar : '🌟');
+  document.getElementById('studentModal').style.display = 'block';
+}
+
+function editStudent(studentId) {
+  const s = state.students.find(x => x.id === studentId);
+  if (!s) return;
+  _editingStudent = { studentId };
+  document.getElementById('studentModalTitle').textContent = '✏️ 編輯學生';
+  document.getElementById('sm_name').value = s.name || '';
+  document.getElementById('sm_color').value = s.color || '#f59e0b';
+  _renderEmojiPicker(s.avatar || '🌟');
+  document.getElementById('studentModal').style.display = 'block';
+}
+
+function _renderEmojiPicker(selected) {
+  const picker = document.getElementById('sm_emoji_picker');
+  picker.innerHTML = _AVATAR_EMOJIS.map(em =>
+    `<button type="button" onclick="selectEmoji(this, '${em}')" data-emoji="${em}"
+      style="background:${em === selected ? '#f59e0b' : '#444'};font-size:1.8em;padding:6px;min-height:48px;min-width:48px;border-radius:8px;cursor:pointer;">${em}</button>`
+  ).join('');
+}
+
+let _selectedEmoji = '🌟';
+function selectEmoji(btn, em) {
+  _selectedEmoji = em;
+  document.querySelectorAll('#sm_emoji_picker button').forEach(b => {
+    b.style.background = b.dataset.emoji === em ? '#f59e0b' : '#444';
+  });
+}
+
+function saveStudentFromModal() {
+  const name = document.getElementById('sm_name').value.trim();
+  if (!name) { alert('請填寫姓名'); return; }
+  const color = document.getElementById('sm_color').value;
+  const avatar = _selectedEmoji;
+  if (_editingStudent.studentId === null) {
+    const id = 's_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+    state.students.push({ id, name, color, avatar, createdAt: new Date().toISOString() });
+  } else {
+    const s = state.students.find(x => x.id === _editingStudent.studentId);
+    if (s) { s.name = name; s.color = color; s.avatar = avatar; }
+  }
+  _persistStudents();
+  closeStudentModal();
+  renderStudentList();
+  _renderStudentGrid();
+  showToast('✅ 學生已儲存');
+}
+
+function closeStudentModal() {
+  document.getElementById('studentModal').style.display = 'none';
+  _editingStudent = null;
+  _selectedEmoji = '🌟';
+}
+
+function deleteStudent(studentId) {
+  const s = state.students.find(x => x.id === studentId);
+  if (!s) return;
+  if (s.id === 's_demo') {
+    showToast('⚠️ 預設學生「示範同學」刪唔到（會自動恢復）');
+    return;
+  }
+  showConfirm(`確定刪除「${s.name}」？所有練習記錄都會一齊刪除。`, () => {
+    state.students = state.students.filter(x => x.id !== studentId);
+    delete state.progress[studentId];
+    if (state.currentStudentId === studentId) state.currentStudentId = null;
+    _persistStudents();
+    _persistProgress();
+    renderStudentList();
+    _renderLoginMode();
+    showToast('🗑 學生已刪除');
+  });
+}
+
+function renderStudentList() {
+  const container = document.getElementById('studentList');
+  if (state.students.length === 0) {
+    container.innerHTML = '<p style="color:rgba(255,255,255,0.6);padding:12px 0;">尚無學生，請新增。</p>';
+    return;
+  }
+  // Sync radio buttons
+  container.innerHTML = state.students.map(s => {
+    const prog = state.progress[s.id] || {};
+    const attempts = prog.totalAttempts || 0;
+    const isDemo = s.id === 's_demo';
+    return `<div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.05);border-radius:12px;padding:12px;margin:8px 0;border-left:6px solid ${s.color || '#f59e0b'};">
+      <span style="font-size:2em;">${s.avatar || '🌟'}</span>
+      <div style="flex:1;">
+        <div style="font-weight:bold;font-size:1.15em;">${_e(s.name)}${isDemo ? ' <span style="font-size:0.7em;color:rgba(245,158,11,0.8);font-weight:normal;">（預設）</span>' : ''}</div>
+        <div style="font-size:0.9em;color:rgba(255,255,255,0.6);">
+          ${attempts} 次練習
+        </div>
+      </div>
+      <button onclick="editStudent('${_e(s.id)}')" style="background:#0ea5e9;min-height:40px;padding:8px 14px;font-size:0.95em;">✏️</button>
+      <button onclick="resetStudentProgress('${_e(s.id)}')" style="background:#f59e0b;min-height:40px;padding:8px 14px;font-size:0.95em;">🔄</button>
+      ${isDemo ? '<button disabled title="預設學生，重新整理頁面會自動恢復" style="background:#666;opacity:0.4;min-height:40px;padding:8px 14px;font-size:0.95em;cursor:not-allowed;">🗑</button>' : `<button onclick="deleteStudent('${_e(s.id)}')" style="background:#dc2626;min-height:40px;padding:8px 14px;font-size:0.95em;">🗑</button>`}
+    </div>`;
+  }).join('');
+}
+
+function resetStudentProgress(studentId) {
+  const s = state.students.find(x => x.id === studentId);
+  if (!s) return;
+  showConfirm(`重設「${s.name}」嘅所有練習記錄？`, () => {
+    state.progress[studentId] = {};
+    _persistProgress();
+    renderStudentList();
+    renderDashboard();
+    showToast('🔄 進度已重設');
+  });
+}
+
+function _persistStudents() {
+  localStorage.setItem('yueStudents', JSON.stringify({
+    students: state.students
+  }));
+}
+
+function reAddDemoStudent() {
+  if (state.students.find(s => s.id === 's_demo')) {
+    showToast('⚠️ 示範同學已經喺度');
+    return;
+  }
+  state.students.unshift({
+    id: 's_demo',
+    name: '示範同學',
+    avatar: '🌟',
+    color: '#f59e0b',
+    createdAt: new Date().toISOString()
+  });
+  _persistStudents();
+  renderStudentList();
+  _renderStudentGrid();
+  showToast('✅ 示範同學已加返');
+}
+
+function _persistProgress() {
+  localStorage.setItem('yueProgress', JSON.stringify(state.progress));
+}
+
+// ================== SAMPLE DATA SEED ==================
+const _DEMO_SEED_KEY = 'yueSeededDemo_v2';
+const _DEMO_SEED_VERSION = 'v2.0';
+
+function _seedDemoProgress() {
+  const seededAt = localStorage.getItem(_DEMO_SEED_KEY);
+  if (seededAt === _DEMO_SEED_VERSION) return;
+
+  const hasRealProgress = Object.keys(state.progress).length > 0;
+  if (hasRealProgress) {
+    localStorage.setItem(_DEMO_SEED_KEY, _DEMO_SEED_VERSION);
+    return;
+  }
+
+  if (state.students.length === 0 || state.passages.length === 0) {
+    return;
+  }
+
+  const now = Date.now();
+  const day = 86400000;
+  if (state.students.length === 1 && state.students[0].id === 's_demo') {
+    const extras = [
+      { id: 's_student1', name: '學生1', avatar: '🌸', color: '#ec4899',
+        createdAt: new Date(now - 32*day).toISOString() },
+      { id: 's_student2', name: '學生2', avatar: '🚀', color: '#3b82f6',
+        createdAt: new Date(now - 28*day).toISOString() },
+      { id: 's_student3', name: '學生3', avatar: '🦋', color: '#a855f7',
+        createdAt: new Date(now - 21*day).toISOString() },
+      { id: 's_student4', name: '學生4', avatar: '🐱', color: '#10b981',
+        createdAt: new Date(now - 18*day).toISOString() },
+      { id: 's_student5', name: '學生5', avatar: '🦉', color: '#f59e0b',
+        createdAt: new Date(now - 14*day).toISOString() },
+    ];
+    state.students = [...state.students, ...extras];
+    _persistStudents();
+  }
+
+  const profileById = {
+    's_demo':     { avgBase: 68, variance: 22, attempts: 18, mastery: 0.55, recentRatio: 0.55, recentStreak: 2 },
+    's_student1': { avgBase: 88, variance: 8,  attempts: 24, mastery: 0.85, recentRatio: 0.70, recentStreak: 5 },
+    's_student2': { avgBase: 48, variance: 24, attempts: 12, mastery: 0.40, recentRatio: 0.12, lowEngagement: true },
+    's_student3': { avgBase: 74, variance: 14, attempts: 20, mastery: 0.70, recentRatio: 0.60, recentStreak: 3 },
+    's_student4': { avgBase: 62, variance: 16, attempts: 16, mastery: 0.60, recentRatio: 0.50, recentStreak: 1 },
+    's_student5': { avgBase: 78, variance: 12, attempts: 22, mastery: 0.75, recentRatio: 0.65, recentStreak: 4 },
+  };
+
+  state.students.forEach((s) => {
+    const prof = profileById[s.id] || { avgBase: 65, variance: 18, attempts: 14, mastery: 0.55, recentRatio: 0.50 };
+    const prog = { byPassage: {}, records: [], totalAttempts: 0 };
+
+    // Which passages this student will touch
+    const targetPassages = [];
+    state.passages.forEach(p => {
+      if (Math.random() < prof.mastery) targetPassages.push(p);
+    });
+    if (targetPassages.length < 2 && state.passages.length >= 2) {
+      for (let i = 0; i < 2; i++) targetPassages.push(state.passages[i]);
+    }
+
+    if (prof.lowEngagement) {
+      prof.attempts = Math.max(5, Math.floor(prof.attempts * 0.6));
+    }
+
+    // Force recentStreak
+    if (prof.recentStreak) {
+      for (let d = 0; d < prof.recentStreak; d++) {
+        const ts = now - d * day - Math.floor(Math.random() * day * 0.5);
+        const psg = targetPassages[Math.floor(Math.random() * targetPassages.length)];
+        const learningBoost = Math.max(0, (14 - d) * 0.6);
+        const jitter = (Math.random() - 0.5) * prof.variance;
+        const score = Math.max(20, Math.min(99, Math.round(prof.avgBase + learningBoost + jitter)));
+        const at = new Date(ts).toISOString();
+        prog.records.push({ passageId: psg.id, passageTitle: psg.title, score, at });
+        if (!prog.byPassage[psg.id]) prog.byPassage[psg.id] = { bestScore: 0, attempts: 0, lastTry: null, history: [] };
+        if (score > prog.byPassage[psg.id].bestScore) prog.byPassage[psg.id].bestScore = score;
+        prog.byPassage[psg.id].attempts += 1;
+        prog.byPassage[psg.id].lastTry = at;
+      }
+    }
+
+    for (let i = 0; i < prof.attempts; i++) {
+      let daysAgo;
+      if (Math.random() < prof.recentRatio) {
+        daysAgo = Math.floor(Math.random() * 8);
+      } else {
+        daysAgo = 8 + Math.floor(Math.random() * 7);
+      }
+      const ts = now - daysAgo * day - Math.floor(Math.random() * day);
+      const psg = targetPassages[Math.floor(Math.random() * targetPassages.length)];
+      const learningBoost = Math.max(0, (14 - daysAgo) * 0.6);
+      const jitter = (Math.random() - 0.5) * prof.variance;
+      const score = Math.max(20, Math.min(99, Math.round(prof.avgBase + learningBoost + jitter)));
+      const at = new Date(ts).toISOString();
+      prog.records.push({ passageId: psg.id, passageTitle: psg.title, score, at });
+      prog.totalAttempts += 1;
+      if (!prog.lastSession || at > prog.lastSession) prog.lastSession = at;
+      if (!prog.byPassage[psg.id]) prog.byPassage[psg.id] = { bestScore: 0, attempts: 0, lastTry: null, history: [] };
+      if (score > prog.byPassage[psg.id].bestScore) prog.byPassage[psg.id].bestScore = score;
+      prog.byPassage[psg.id].attempts += 1;
+      prog.byPassage[psg.id].lastTry = at;
+    }
+
+    prog.records.sort((a, b) => new Date(a.at) - new Date(b.at));
+    state.progress[s.id] = prog;
+  });
+
+  _persistProgress();
+  localStorage.setItem(_DEMO_SEED_KEY, _DEMO_SEED_VERSION);
+}
+
+// Manual re-seed: wipes yueProgress + yueSeededDemo, then re-runs auto-seed.
+// Confirm before destroying any real user data.
+function _reseedDemoProgress() {
+  const msg = '確定要重設示範資料？\n\n呢個會清除現時所有學生嘅練習記錄，重新生成 14 日嘅示範資料。\n（你之前加嘅學生名單會保留）';
+  if (!confirm(msg)) return;
+  state.progress = {};
+  localStorage.removeItem('yueProgress');
+  localStorage.removeItem(_DEMO_SEED_KEY);
+  _seedDemoProgress();
+  renderDashboard();
+  showToast('✅ 已重設示範資料');
+}
+
+// ================== ASR ENGINE UI ==================
+function setAsrEngine(engineId) {
+  if (!_ASR_ENGINES[engineId]) return;
+  state.asrEngine = engineId;
+  localStorage.setItem('yueAsrEngine', engineId);
+  renderAsrEngineList();
+  showToast(`🔧 引擎切換為：${_ASR_ENGINES[engineId].name}`);
+}
+
+function renderAsrEngineList() {
+  const container = document.getElementById('asrEngineList');
+  if (!container) return;
+  container.innerHTML = Object.values(_ASR_ENGINES).map(engine => {
+    const available = engine.isAvailable();
+    const isCurrent = state.asrEngine === engine.id;
+    return `<label style="display:flex;align-items:flex-start;gap:12px;background:${isCurrent ? 'rgba(245,158,11,0.15)' : 'rgba(255,255,255,0.05)'};border:2px solid ${isCurrent ? '#f59e0b' : 'transparent'};border-radius:12px;padding:14px;margin:8px 0;cursor:${available ? 'pointer' : 'not-allowed'};opacity:${available ? '1' : '0.5'};">
+      <input type="radio" name="asrEngine" value="${engine.id}" ${isCurrent ? 'checked' : ''} ${available ? '' : 'disabled'}
+        onchange="setAsrEngine('${engine.id}')"
+        style="width:24px;height:24px;margin-top:4px;accent-color:#f59e0b;">
+      <div style="flex:1;">
+        <div style="font-weight:bold;font-size:1.1em;color:${isCurrent ? '#f59e0b' : '#fff'};">${engine.name} ${isCurrent ? '✓' : ''}</div>
+        <div style="color:rgba(255,255,255,0.7);font-size:0.95em;margin-top:4px;">${engine.description}</div>
+        <div style="font-size:0.85em;margin-top:6px;">
+          <span style="background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:10px;margin-right:6px;">${engine.costEmoji} 成本</span>
+          <span style="background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:10px;">${engine.privacyEmoji} 私隱</span>
+          ${available ? '<span style="background:rgba(34,197,94,0.3);padding:2px 8px;border-radius:10px;margin-left:6px;">✅ 可用</span>' : '<span style="background:rgba(239,68,68,0.3);padding:2px 8px;border-radius:10px;margin-left:6px;">❌ 不可用</span>'}
+        </div>
+      </div>
+    </label>`;
+  }).join('');
+
+  // Render stats
+  const stats = _getAsrStats();
+  const statsEl = document.getElementById('asrStats');
+  if (statsEl) {
+    if (Object.keys(stats).length === 0) {
+      statsEl.innerHTML = '<em>尚無評估記錄</em>';
+    } else {
+      statsEl.innerHTML = Object.entries(stats).map(([engine, count]) =>
+        `<div>${_ASR_ENGINES[engine] ? _ASR_ENGINES[engine].name : engine}：${count} 次</div>`
+      ).join('');
+    }
+  }
+
+  // Show whisper cache status if relevant
+  checkWhisperCache();
+}
+
+function _getAsrStats() {
+  const stats = {};
+  Object.values(state.progress).forEach(p => {
+    (p.records || []).forEach(r => {
+      const e = r.engine || 'webspeech';
+      stats[e] = (stats[e] || 0) + 1;
+    });
+  });
+  return stats;
+}
+
+function clearAudioBaselines() {
+  showConfirm('清除所有聲紋 baseline？清除後自訂模式需要重新建立基線。', () => {
+    localStorage.removeItem('yueAudioBaselines');
+    showToast('🗑 Baseline 已清除');
+  });
+}
+
+// ================== WHISPER CACHE MANAGEMENT ==================
+async function preloadWhisper() {
+  const statusEl = document.getElementById('whisperCacheContent');
+  if (statusEl) statusEl.innerHTML = '⏳ 開始下載…';
+  try {
+    await _ASR_ENGINES.whisper._ensurePipeline((p) => {
+      if (statusEl) statusEl.innerHTML = p.message || '⏳ 處理中…';
+    });
+    if (statusEl) statusEl.innerHTML = '✅ 模型已下載並 cache。';
+    showToast('✅ Whisper 已預載！');
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = '❌ 下載失敗：' + e.message;
+    showToast('❌ 預載失敗');
+  }
+}
+
+async function checkWhisperCache() {
+  const container = document.getElementById('whisperCacheStatus');
+  const content = document.getElementById('whisperCacheContent');
+  if (!container || !content) return;
+  // Show the cache section when system tab is rendered AND whisper was used
+  if (state.asrEngine === 'whisper' || _ASR_ENGINES.whisper._pipeline) {
+    container.style.display = 'block';
+    if (_ASR_ENGINES.whisper._pipeline) {
+      content.innerHTML = '✅ 模型已載入到記憶體。重新整理後會自動從 cache 恢復。';
+    } else {
+      // Check if there's likely a cached model via Cache Storage
+      try {
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          const hfCache = keys.find(k => k.includes('huggingface') || k.includes('transformers'));
+          if (hfCache) {
+            content.innerHTML = '✅ 模型已 cache（離線可用）。點下方按鈕預載到記憶體。';
+          } else {
+            content.innerHTML = '⚠️ 模型未下載。點下方按鈕開始下載（約 40MB，需網絡）。';
+          }
+        } else {
+          content.innerHTML = '⚠️ 尚未下載。';
+        }
+      } catch (e) {
+        content.innerHTML = '⚠️ 狀態不明：' + e.message;
+      }
+    }
+  } else {
+    container.style.display = 'none';
+  }
+}
+
+async function clearWhisperCache() {
+  showConfirm('清除 Whisper 模型 cache？清除後需要重新下載。', async () => {
+    try {
+      // Clear transformers.js in-memory pipeline
+      _ASR_ENGINES.whisper._pipeline = null;
+      _ASR_ENGINES.whisper._pipelineLoading = null;
+      // Clear Cache Storage entries that look like HF model files
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        for (const key of keys) {
+          if (key.includes('huggingface') || key.includes('transformers') || key.includes('onnx')) {
+            await caches.delete(key);
+          }
+        }
+      }
+      // Clear IndexedDB caches that transformers.js uses
+      if ('databases' in indexedDB) {
+        try {
+          const dbs = await indexedDB.databases();
+          for (const db of dbs) {
+            if (db.name && (db.name.includes('huggingface') || db.name.includes('transformers') || db.name.includes('onnx'))) {
+              indexedDB.deleteDatabase(db.name);
+            }
+          }
+        } catch(e) {}
+      }
+      showToast('🗑 Whisper cache 已清除');
+      checkWhisperCache();
+    } catch (e) {
+      showToast('❌ 清除失敗：' + e.message);
+    }
+  });
+}
+
+// ================== PROGRESS TRACKING ==================
+function _recordPassageAttempt(passageId, passageTitle, score, transcript) {
+  if (!state.currentStudentId) return;
+  const sid = state.currentStudentId;
+  if (!state.progress[sid]) {
+    state.progress[sid] = { byPassage: {}, records: [], totalAttempts: 0 };
+  }
+  const p = state.progress[sid];
+  if (!p.byPassage[passageId]) {
+    p.byPassage[passageId] = { bestScore: 0, attempts: 0, lastTry: null, history: [] };
+  }
+  const bp = p.byPassage[passageId];
+  if (!bp.history) bp.history = [];
+  const now = new Date().toISOString();
+  bp.attempts += 1;
+  bp.lastTry = now;
+  if (score > bp.bestScore) bp.bestScore = score;
+  bp.history.push({ score, transcript, at: now });
+  if (bp.history.length > 20) bp.history = bp.history.slice(-20);
+  p.totalAttempts += 1;
+  p.lastSession = now;
+  p.records.push({ passageId, passageTitle, score, transcript, at: now });
+  if (p.records.length > 200) p.records = p.records.slice(-200);
+  state.completed.assessment = true;
+  updateHubStatus();
+  _persistProgress();
+}
+
+function _switchStudent(studentId) {
+  state.currentStudentId = studentId;
+  localStorage.setItem('yueLastStudentId', studentId);
+}
+
+// ================== DASHBOARD ==================
+// Time period filter for dashboard
+let _dashFilter = 'all'; // 'all' | 'week' | 'month'
+// Sort order for student cards. 'default' = creation order (state.students order).
+// 'followup' = most-needs-help first; 'progress' = biggest recent gain first;
+// 'practice' = fewest attempts first.
+let _dashSort = 'default';
+
+function renderDashboard() {
+  // Ensure fresh state from localStorage (in case stale)
+  try {
+    const sData = JSON.parse(localStorage.getItem('yueStudents') || '{}');
+    if (Array.isArray(sData.students) && sData.students.length > 0 && state.students.length === 0) {
+      state.students = sData.students;
+    }
+    state.progress = JSON.parse(localStorage.getItem('yueProgress') || '{}');
+  } catch(e) {}
+
+  const container = document.getElementById('dashboardContent');
+  if (!container) {
+    console.warn('renderDashboard: #dashboardContent not found');
+    return;
+  }
+  if (state.students.length === 0) {
+    container.innerHTML = `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:30px 20px;text-align:center;margin-top:20px;">
+      <div style="font-size:3em;margin-bottom:12px;">👨‍🎓</div>
+      <p style="font-size:1.2em;color:rgba(255,255,255,0.8);margin-bottom:16px;">尚未新增任何學生</p>
+      <button onclick="tchSwitchTab('students')" style="background:#7c3aed;font-size:1.1em;padding:12px 24px;border-radius:10px;">去 👨‍🎓 學生管理</button>
+    </div>`;
+    return;
+  }
+  const totalPassages = state.passages.length;
+
+  // Filter scores by time period
+  const filterScores = (scores) => {
+    if (_dashFilter === 'all' || !scores) return scores || [];
+    const now = new Date();
+    const cutoff = _dashFilter === 'week'
+      ? new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+      : new Date(now.getFullYear(), now.getMonth(), 1);
+    return scores.filter(s => new Date(s.at) >= cutoff);
+  };
+  const allScores = Object.values(state.progress).flatMap(p => filterScores(p.records || []));
+  const totalAttempts = allScores.length;
+  const avgScore = allScores.length > 0 ? Math.round(allScores.reduce((s, x) => s + x.score, 0) / allScores.length) : 0;
+
+  let html = `
+    <div style="display:flex;gap:6px;margin-bottom:10px;background:rgba(0,0,0,0.2);border-radius:10px;padding:4px;">
+      <button onclick="_dashFilter='all';renderDashboard();" style="flex:1;background:${_dashFilter==='all'?'#7c3aed':'transparent'};font-size:0.95em;padding:8px;min-height:40px;border-radius:8px;">全部</button>
+      <button onclick="_dashFilter='month';renderDashboard();" style="flex:1;background:${_dashFilter==='month'?'#7c3aed':'transparent'};font-size:0.95em;padding:8px;min-height:40px;border-radius:8px;">本月</button>
+      <button onclick="_dashFilter='week';renderDashboard();" style="flex:1;background:${_dashFilter==='week'?'#7c3aed':'transparent'};font-size:0.95em;padding:8px;min-height:40px;border-radius:8px;">本週</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+      <span style="font-size:0.85em;color:rgba(255,255,255,0.6);">排序：</span>
+      <select onchange="_dashSort=this.value;renderDashboard();" style="flex:1;background:rgba(0,0,0,0.3);color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:8px;padding:6px 10px;font-size:0.9em;min-height:36px;">
+        <option value="default" ${_dashSort==='default'?'selected':''}>預設（建立順序）</option>
+        <option value="followup" ${_dashSort==='followup'?'selected':''}>⚠️ 最需要跟進</option>
+        <option value="progress" ${_dashSort==='progress'?'selected':''}>↗ 進步最大</option>
+        <option value="practice" ${_dashSort==='practice'?'selected':''}>📉 練習最少</option>
+      </select>
+    </div>
+
+    <!-- 4 summary cards -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px;">
+      <div style="background:rgba(124,58,237,0.3);border-radius:10px;padding:12px 6px;text-align:center;">
+        <div style="font-size:1.9em;font-weight:bold;">${state.students.length}</div>
+        <div style="font-size:0.8em;opacity:0.85;">學生</div>
+      </div>
+      <div style="background:rgba(34,197,94,0.3);border-radius:10px;padding:12px 6px;text-align:center;">
+        <div style="font-size:1.9em;font-weight:bold;">${totalAttempts}</div>
+        <div style="font-size:0.8em;opacity:0.85;">練習次數</div>
+      </div>
+      <div style="background:rgba(245,158,11,0.3);border-radius:10px;padding:12px 6px;text-align:center;">
+        <div style="font-size:1.9em;font-weight:bold;">${totalPassages}</div>
+        <div style="font-size:0.8em;opacity:0.85;">文章</div>
+      </div>
+      <div style="background:rgba(59,130,246,0.3);border-radius:10px;padding:12px 6px;text-align:center;">
+        <div style="font-size:1.9em;font-weight:bold;">${avgScore}</div>
+        <div style="font-size:0.8em;opacity:0.85;">平均分</div>
+      </div>
+    </div>
+  `;
+
+  // Empty state CTA when no attempts yet
+  if (totalAttempts === 0) {
+    html += `<div style="background:linear-gradient(135deg,rgba(124,58,237,0.2),rgba(245,158,11,0.2));border:2px dashed rgba(245,158,11,0.5);border-radius:16px;padding:30px 20px;margin-bottom:16px;text-align:center;">
+      <img src="assets/images/decorative/empty-mic.png" alt="" style="width:140px;height:140px;margin:0 auto 8px;display:block;">
+      <p style="font-size:1.2em;font-weight:bold;color:#f59e0b;margin-bottom:6px;">未有練習資料</p>
+      <p style="color:rgba(255,255,255,0.7);font-size:0.95em;margin-bottom:16px;">鼓勵學生完成第一次評估，呢度就會有圖表</p>
+      <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:12px;font-size:0.9em;color:rgba(255,255,255,0.7);">
+        💡 提示：用學生 mode 撳卡登入做幾次評估，再返嚟睇圖表
+      </div>
+    </div>`;
+  }
+
+  // ===== Mastery Funnel (4 stages) =====
+  if (totalAttempts > 0) {
+    const totalSlots = state.passages.length * state.students.length;
+    const masteredCount = Object.values(state.progress).reduce((s, p) => s + Object.values(p.byPassage || {}).filter(w => w.bestScore >= 80).length, 0);
+    const practicingCount = Object.values(state.progress).reduce((s, p) => s + Object.values(p.byPassage || {}).filter(w => w.bestScore >= 60 && w.bestScore < 80).length, 0);
+    const touchedCount = Object.values(state.progress).reduce((s, p) => s + Object.values(p.byPassage || {}).filter(w => w.attempts > 0 && w.bestScore < 60).length, 0);
+    const untouchedCount = Math.max(0, totalSlots - masteredCount - practicingCount - touchedCount);
+    const funnelStages = [
+      { label: '未接觸', count: untouchedCount, color: 'rgba(255,255,255,0.3)' },
+      { label: '接觸過', count: touchedCount, color: '#ef4444' },
+      { label: '進步中', count: practicingCount, color: '#f59e0b' },
+      { label: '已掌握', count: masteredCount, color: '#22c55e' }
+    ];
+    html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📊 Mastery 漏斗</p>
+      <div style="font-size:0.85em;color:rgba(255,255,255,0.6);margin-bottom:10px;">全班 ${state.students.length} 學生 × ${state.passages.length} 篇文章 = ${totalSlots} 個進度</div>
+      ${_renderFunnel(funnelStages)}
+    </div>`;
+  }
+
+  // ===== 30-day class average line chart =====
+  if (totalAttempts > 0) {
+    const dailyData = _buildDailyAvg(allScores, 30);
+    html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📈 過去 30 日全班平均分</p>
+      ${_renderLineChart(dailyData)}
+    </div>`;
+  }
+
+  // ===== 4-week activity heatmap =====
+  if (totalAttempts > 0) {
+    const weeklyData = _buildWeeklyHeatmap(allScores);
+    const totalActive = allScores.length;
+    html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">🟩 過去 4 週活躍度（總 ${totalActive} 次）</p>
+      ${_renderWeekHeatmap(weeklyData)}
+    </div>`;
+  }
+
+  // ===== Class-wide weak passages Top 5 =====
+  const passageDifficulty = _computeClassWeakSpots(Object.values(state.progress).flatMap(p => p.records || []));
+  if (passageDifficulty.length > 0) {
+    const barItems = passageDifficulty.slice(0, 5).map(w => ({
+      label: w.word, value: w.avg, count: w.count
+    }));
+    html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:4px;">🎯 全班難點文章 Top 5</p>
+      ${_renderBarChart(barItems, 100, null)}
+    </div>`;
+  }
+
+  // ===== Actionable alerts =====
+  if (totalAttempts > 0) {
+    const alerts = _buildAlerts();
+    if (alerts.length > 0) {
+      html += `<div style="background:rgba(239,68,68,0.1);border:2px solid rgba(239,68,68,0.3);border-radius:12px;padding:14px;margin-bottom:14px;">
+        <p style="font-weight:bold;color:#ef4444;margin-bottom:8px;">⚠️ 需要跟進（${alerts.length}）</p>
+        ${alerts.map(a => `<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.08);font-size:0.95em;">${a}</div>`).join('')}
+      </div>`;
+    }
+  }
+
+  // ===== ASR engine pie =====
+  const asrStats = _getAsrStats();
+  if (Object.keys(asrStats).length > 0) {
+    const slices = Object.entries(asrStats).map(([engine, count]) => {
+      const e = _ASR_ENGINES[engine] || { name: engine, costEmoji: '⚙️', privacyEmoji: '' };
+      const colorMap = { 'webspeech': '#3b82f6', 'whisper': '#22c55e', 'custom': '#f59e0b' };
+      return {
+        label: e.name,
+        value: count,
+        color: colorMap[engine] || '#666',
+        emoji: e.costEmoji
+      };
+    });
+    html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">🎙 評估引擎使用分佈</p>
+      ${_renderPieChart(slices)}
+    </div>`;
+  }
+
+  // ===== Per-student cards =====
+  // Pre-compute a sort key per student and sort the array. Keeps the .map() template
+  // simple and avoids recomputing signals (trend, engagement, struggling) twice.
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const studentKeys = state.students.map(s => {
+    const p = state.progress[s.id] || {};
+    const allScores = p.records || [];
+    const filteredScores = filterScores(allScores);
+    const attempts = filteredScores.length;
+    const allByPassage = p.byPassage || {};
+    const mastered = Object.values(allByPassage).filter(w => w.bestScore >= 80).length;
+    const struggling = Object.values(allByPassage).filter(w => w.attempts >= 2 && w.bestScore < 60).length;
+    // Trend: recent 5 vs prior 5
+    let trendDiff = 0;
+    if (allScores.length >= 6) {
+      const recent = allScores.slice(-5).map(x => x.score);
+      const prior = allScores.slice(-10, -5).map(x => x.score);
+      if (prior.length > 0) {
+        trendDiff = (recent.reduce((a, b) => a + b, 0) / recent.length) - (prior.reduce((a, b) => a + b, 0) / prior.length);
+      }
+    }
+    // Engagement signal: recent-week attempts vs class average
+    const recentWeekCount = allScores.filter(x => new Date(x.at) >= sevenDaysAgo).length;
+    // No-practice signal
+    const lastDate = p.lastSession ? new Date(p.lastSession) : null;
+    const daysSince = lastDate ? Math.floor((now - lastDate) / (24 * 60 * 60 * 1000)) : 999;
+    // Last 3 attempts
+    const last3 = allScores.slice(-3).map(x => x.score);
+    const recentStruggling = last3.length >= 3 && last3.every(x => x < 60);
+    // Compute sort key per mode
+    let key = 0;
+    if (_dashSort === 'followup') {
+      // Higher = more needs follow-up. Tie-break: name (stable).
+      key = (daysSince >= 3 ? 100 : 0)
+        + (recentStruggling ? 50 : 0)
+        + (recentWeekCount === 0 && allScores.length > 0 ? 80 : 0) // dropped off
+        + (recentWeekCount > 0 && recentWeekCount < 3 && allScores.length > recentWeekCount ? 30 : 0) // low engagement
+        + (struggling * 20)
+        - (mastered * 5);
+      // Invert mastered: more mastered = less needs follow-up
+      // We multiply by -1 when sorting so highest key comes first
+      key = -key; // (will be sorted DESC by sort comparator below)
+    } else if (_dashSort === 'progress') {
+      key = -trendDiff; // biggest gain first (invert so DESC sort)
+    } else if (_dashSort === 'practice') {
+      // Fewest attempts first. New students (0 attempts) at top.
+      key = attempts;
+    } else {
+      // 'default' = use the original index in state.students
+      key = state.students.indexOf(s);
+    }
+    return { s, key, attempts, mastered, struggling, daysSince, recentWeekCount, recentStruggling, trendDiff };
+  });
+  // Sort by key ascending (since we inverted followup/progress already)
+  if (_dashSort === 'followup') {
+    // key was inverted (most-needs-help = most negative). Sort ascending.
+    studentKeys.sort((a, b) => a.key - b.key);
+  } else if (_dashSort === 'progress') {
+    // key was inverted (biggest gain = most negative). Sort ascending.
+    studentKeys.sort((a, b) => a.key - b.key);
+  } else if (_dashSort === 'practice') {
+    studentKeys.sort((a, b) => a.key - b.key);
+  } // default: leave in state.students order
+  const sortedStudents = studentKeys.map(x => x.s);
+
+  html += `<p style="font-weight:bold;color:#f59e0b;margin:18px 0 8px;font-size:1.1em;">👨‍🎓 學生進度</p>`;
+  html += sortedStudents.map(s => {
+    const p = state.progress[s.id] || {};
+    const allScores = p.records || [];
+    const filteredScores = filterScores(allScores);
+    const attempts = filteredScores.length;
+    const lastSession = p.lastSession ? new Date(p.lastSession).toLocaleString('zh-HK', { month:'numeric', day:'numeric', hour:'numeric', minute:'numeric' }) : '—';
+    const allByPassage = p.byPassage || {};
+    const mastered = Object.values(allByPassage).filter(w => w.bestScore >= 80).length;
+    const struggling = Object.values(allByPassage).filter(w => w.attempts >= 2 && w.bestScore < 60).length;
+    const avg = attempts > 0 ? Math.round(filteredScores.reduce((sum, x) => sum + x.score, 0) / attempts) : 0;
+    // Improvement: last 5 vs prior 5
+    let trendLabel = '—';
+    if (allScores.length >= 6) {
+      const recent = allScores.slice(-5).map(x => x.score);
+      const prior = allScores.slice(-10, -5).map(x => x.score);
+      if (prior.length > 0) {
+        const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
+        const priorAvg = prior.reduce((a, b) => a + b, 0) / prior.length;
+        const diff = Math.round(recentAvg - priorAvg);
+        if (diff > 0) trendLabel = `↗ +${diff}`;
+        else if (diff < 0) trendLabel = `↘ ${diff}`;
+        else trendLabel = '→ ±0';
+      }
+    }
+    const trendColor = trendLabel.startsWith('↗') ? '#22c55e' : trendLabel.startsWith('↘') ? '#ef4444' : 'rgba(255,255,255,0.6)';
+    // Streak: consecutive days of practice ending today or yesterday
+    const streak = _calcStreak(allScores);
+    const streakBadge = streak >= 2
+      ? `<span title="連續 ${streak} 日朗讀" style="background:linear-gradient(135deg,rgba(239,68,68,0.3),rgba(245,158,11,0.3));padding:2px 8px;border-radius:12px;font-size:0.85em;font-weight:bold;border:1px solid rgba(239,68,68,0.4);">🔥${streak}</span>`
+      : '';
+    return `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin:10px 0;border-left:6px solid ${_e(s.color || '#f59e0b')};">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap;">
+        <span style="font-size:1.8em;">${s.avatar || '🌟'}</span>
+        <span style="font-weight:bold;font-size:1.2em;flex:1;">${_e(s.name)}</span>
+        <span style="background:rgba(255,255,255,0.15);padding:2px 10px;border-radius:12px;font-size:0.85em;">${attempts} 次</span>
+        ${streakBadge}
+        <span style="color:${trendColor};font-size:1em;font-weight:bold;">${trendLabel}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:0.9em;text-align:center;margin-bottom:6px;">
+        <div style="background:rgba(34,197,94,0.2);padding:6px;border-radius:8px;">✅ ${mastered}</div>
+        <div style="background:rgba(239,68,68,0.2);padding:6px;border-radius:8px;">⚠️ ${struggling}</div>
+        <div style="background:rgba(245,158,11,0.2);padding:6px;border-radius:8px;">📊 ${avg}</div>
+      </div>
+      <div style="margin:6px 0;padding:0 2px;">
+        ${_renderSessionDots(allScores, 7)}
+      </div>
+      <div style="font-size:0.85em;color:rgba(255,255,255,0.6);margin-top:6px;">最後朗讀：${lastSession}</div>
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <button onclick="showStudentDetail('${_e(s.id)}')" style="flex:1;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:42px;">📋 詳細</button>
+        <button onclick="exportStudentReport('${_e(s.id)}')" style="flex:1;background:#f59e0b;font-size:0.95em;padding:10px;min-height:42px;">📄 報告</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Top-level PDF export
+  if (totalAttempts > 0) {
+    html += `<button onclick="exportClassReport()" style="margin-top:16px;width:100%;background:#0ea5e9;font-size:1.05em;padding:14px;">📄 匯出全班報告 (PDF)</button>`;
+  }
+
+  // Dev/demo helper — re-seed sample data (for teacher demo / preview)
+  // Shown only if demo data has been seeded; lets teacher refresh sample data
+  if (localStorage.getItem(_DEMO_SEED_KEY) === _DEMO_SEED_VERSION) {
+    html += `<div style="text-align:center;margin-top:14px;padding-top:12px;border-top:1px dashed rgba(255,255,255,0.15);">
+      <button onclick="_reseedDemoProgress()" style="background:transparent;color:rgba(255,255,255,0.5);font-size:0.85em;padding:6px 12px;border:1px solid rgba(255,255,255,0.2);border-radius:6px;">🧪 重設示範資料</button>
+    </div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+// Build actionable alerts (3-day no reading, struggling streak, etc.)
+function _buildAlerts() {
+  const alerts = [];
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  state.students.forEach(s => {
+    const p = state.progress[s.id] || {};
+    const records = p.records || [];
+    if (records.length === 0) return;
+    // Alert 1: 3+ days no reading
+    const lastDate = p.lastSession ? new Date(p.lastSession) : null;
+    if (lastDate) {
+      const daysSince = Math.floor((now - lastDate) / (24 * 60 * 60 * 1000));
+      if (daysSince >= 3) {
+        alerts.push(`${s.avatar} <b>${s.name}</b>：${daysSince} 日冇朗讀`);
+      }
+    }
+    // Alert 2: last 3 attempts all < 60
+    const last3 = records.slice(-3).map(x => x.score);
+    if (last3.length >= 3 && last3.every(s => s < 60)) {
+      alerts.push(`${s.avatar} <b>${s.name}</b>：最近 3 次都 &lt; 60 分`);
+    }
+  });
+  // Alert 3: low engagement — student reading much less than class avg (last 7 days)
+  const weeklyCounts = state.students.map(s => {
+    const p = state.progress[s.id] || {};
+    const recent = (p.records || []).filter(x => new Date(x.at) >= sevenDaysAgo);
+    return { s, recent: recent.length, total: (p.records || []).length };
+  });
+  const activeThisWeek = weeklyCounts.filter(x => x.recent > 0);
+  if (activeThisWeek.length >= 2) {
+    const classAvg = activeThisWeek.reduce((sum, x) => sum + x.recent, 0) / activeThisWeek.length;
+    if (classAvg >= 2) {
+      weeklyCounts.forEach(({ s, recent, total }) => {
+        if (recent < classAvg * 0.5 && total > recent) {
+          alerts.push(`⚠️ <b>${s.name}</b>：本週只朗讀 ${recent} 次（班平均 ${Math.round(classAvg)} 次）`);
+        }
+      });
+    }
+  }
+  // Alert 4: passages that 50%+ students score < 50
+  const passageFail = {};
+  state.students.forEach(s => {
+    const p = state.progress[s.id] || {};
+    Object.entries(p.byPassage || {}).forEach(([pid, info]) => {
+      if (!passageFail[pid]) passageFail[pid] = { fail: 0, total: 0 };
+      passageFail[pid].total += 1;
+      if (info.bestScore < 50) passageFail[pid].fail += 1;
+    });
+  });
+  Object.entries(passageFail).forEach(([pid, info]) => {
+    if (info.total >= 2 && info.fail / info.total >= 0.5) {
+      const psg = state.passages.find(p => p.id === pid);
+      const title = psg ? psg.title : pid;
+      alerts.push(`📌 <b>${_e(title)}</b>：${info.fail}/${info.total} 學生 &lt; 50 分（建議全班重溫）`);
+    }
+  });
+  return alerts.slice(0, 8);
+}
+
+// Render a tiny SVG sparkline of scores over time
+function _renderSparkline(data, width, height) {
+  if (!data || data.length < 2) return '';
+  const max = 100, min = 0;
+  const stepX = width / (data.length - 1);
+  const points = data.map((v, i) => {
+    const x = i * stepX;
+    const y = height - ((v - min) / (max - min)) * height;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const last = data[data.length - 1];
+  const lastColor = last >= 80 ? '#22c55e' : last >= 60 ? '#f59e0b' : '#ef4444';
+  return `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:30px;">
+    <polyline points="${points}" fill="none" stroke="${lastColor}" stroke-width="2"/>
+    <circle cx="${((data.length-1)*stepX).toFixed(1)}" cy="${(height - ((last-min)/(max-min))*height).toFixed(1)}" r="3" fill="${lastColor}"/>
+  </svg>`;
+}
+
+// Render a row of N colored dots, one per recent practice session.
+// Color: green ≥80 (mastered), amber 60-79 (practicing), red <60 (struggling), gray = no data.
+// `scores` is the student's full score history; we take the last N.
+function _renderSessionDots(scores, n) {
+  n = n || 7;
+  const recent = (scores || []).slice(-n);
+  // Pad with nulls on the LEFT so the rightmost dot is always the most recent
+  const padded = [];
+  for (let i = 0; i < n - recent.length; i++) padded.push(null);
+  for (const s of recent) padded.push(s);
+  const dots = padded.map((s, i) => {
+    if (s === null) {
+      return `<span title="第 ${i+1} 次：未有資料" style="display:inline-block;width:14px;height:14px;border-radius:50%;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);margin:0 1px;vertical-align:middle;"></span>`;
+    }
+    const c = s.score >= 80 ? '#22c55e' : s.score >= 60 ? '#f59e0b' : '#ef4444';
+    const ptitle = s.passageTitle || '';
+    const date = s.at ? new Date(s.at).toLocaleString('zh-HK', { month:'numeric', day:'numeric' }) : '';
+    return `<span title="${ptitle ? ptitle + ' — ' : ''}${s.score}分（${date}）" style="display:inline-block;width:14px;height:14px;border-radius:50%;background:${c};box-shadow:0 0 0 1px rgba(0,0,0,0.3) inset;margin:0 1px;vertical-align:middle;"></span>`;
+  }).join('');
+  return `<div style="display:flex;align-items:center;gap:6px;font-size:0.8em;color:rgba(255,255,255,0.5);">
+    <span style="flex-shrink:0;">近 ${n} 次：</span>
+    <span style="flex:1;letter-spacing:0;line-height:1;">${dots}</span>
+  </div>`;
+}
+
+// ================== SVG VISUALIZATION UTILITIES ==================
+
+// Strip heatmap: N days as colored cells. data = array of {date, count}
+function _renderStripHeatmap(data, days) {
+  days = days || 7;
+  data = data || [];
+  const cellSize = 28, gap = 4;
+  const totalW = days * (cellSize + gap);
+  let html = `<svg viewBox="0 0 ${totalW} ${cellSize}" style="width:100%;max-width:320px;height:${cellSize}px;">`;
+  for (let i = 0; i < days; i++) {
+    const cell = data[i] || { count: 0 };
+    const intensity = Math.min(1, cell.count / 5);
+    const color = cell.count === 0 ? 'rgba(255,255,255,0.1)'
+      : intensity < 0.4 ? 'rgba(34,197,94,0.4)'
+      : intensity < 0.8 ? 'rgba(34,197,94,0.7)'
+      : '#22c55e';
+    const x = i * (cellSize + gap);
+    const label = cell.date ? new Date(cell.date).getDate() : '';
+    html += `<rect x="${x}" y="0" width="${cellSize}" height="${cellSize}" rx="6" fill="${color}" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>`;
+    if (label) {
+      html += `<text x="${x + cellSize/2}" y="${cellSize - 6}" text-anchor="middle" font-size="10" fill="rgba(255,255,255,0.6)">${label}</text>`;
+    }
+  }
+  html += '</svg>';
+  return html;
+}
+
+// 4-week × 7-day heatmap (like GitHub contributions)
+function _renderWeekHeatmap(weeklyData) {
+  // weeklyData = [{day0..day6: count}, ...] up to 4 weeks
+  const cellSize = 22, gap = 3;
+  const labelW = 28, headerH = 18;
+  const w = labelW + 7 * (cellSize + gap);
+  const h = headerH + 4 * (cellSize + gap);
+  const dayLabels = ['一', '二', '三', '四', '五', '六', '日'];
+  let html = `<svg viewBox="0 0 ${w} ${h}" style="width:100%;max-width:280px;height:${h}px;">`;
+  // Day labels
+  dayLabels.forEach((lbl, i) => {
+    html += `<text x="0" y="${headerH + i * (cellSize + gap) + cellSize * 0.7}" font-size="10" fill="rgba(255,255,255,0.5)">${lbl}</text>`;
+  });
+  // Cells
+  for (let w = 0; w < 4; w++) {
+    for (let d = 0; d < 7; d++) {
+      const count = (weeklyData[w] && weeklyData[w][d]) || 0;
+      const intensity = Math.min(1, count / 5);
+      const color = count === 0 ? 'rgba(255,255,255,0.08)'
+        : intensity < 0.4 ? 'rgba(34,197,94,0.35)'
+        : intensity < 0.8 ? 'rgba(34,197,94,0.6)'
+        : '#22c55e';
+      const x = labelW + d * (cellSize + gap);
+      const y = headerH + w * (cellSize + gap);
+      html += `<rect x="${x}" y="${y}" width="${cellSize}" height="${cellSize}" rx="4" fill="${color}"/>`;
+    }
+  }
+  html += '</svg>';
+  return html;
+}
+
+// Horizontal bar chart for weak spots
+// If `clickFnName` is provided (string, name of a global function), each row is clickable
+// and invokes `clickFnName(encodedLabel)` on click. Used for word → student drill-down.
+function _renderBarChart(items, maxValue, clickFnName) {
+  // items = [{label, value, count}]
+  maxValue = maxValue || 100;
+  const rowH = 26, gap = 8, labelW = 70, countW = 60, barAreaW = 160;
+  const totalH = items.length * (rowH + gap);
+  const totalW = labelW + barAreaW + countW;
+  let html = `<svg viewBox="0 0 ${totalW} ${totalH}" style="width:100%;height:${totalH}px;">`;
+  items.forEach((item, i) => {
+    const y = i * (rowH + gap);
+    const pct = (item.value / maxValue) * 100;
+    const barColor = item.value < 50 ? '#ef4444' : item.value < 70 ? '#f59e0b' : '#22c55e';
+    const rowInner = `
+      <text x="0" y="${y + rowH/2 + 4}" font-size="12" fill="rgba(255,255,255,0.9)" font-weight="bold">${item.label}</text>
+      <rect x="${labelW}" y="${y + 4}" width="${barAreaW}" height="${rowH - 8}" rx="4" fill="rgba(0,0,0,0.3)"/>
+      <rect x="${labelW}" y="${y + 4}" width="${barAreaW * pct / 100}" height="${rowH - 8}" rx="4" fill="${barColor}"/>
+      <text x="${labelW + barAreaW * pct / 100 + 4}" y="${y + rowH/2 + 4}" font-size="11" fill="#fff" font-weight="bold">${item.value}${item.suffix || ''}</text>
+      ${item.count !== undefined ? `<text x="${labelW + barAreaW + 8}" y="${y + rowH/2 + 4}" font-size="10" fill="rgba(255,255,255,0.5)">${item.count}次</text>` : ''}
+    `;
+    if (clickFnName) {
+      // Escape quotes/backslash/newlines for safe injection into onclick attribute
+      const safe = String(item.label).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, ' ');
+      html += `<g onclick="${clickFnName}('${safe}')" style="cursor:pointer;">${rowInner}</g>`;
+    } else {
+      html += rowInner;
+    }
+  });
+  html += '</svg>';
+  return html;
+}
+
+// Mastery funnel
+function _renderFunnel(stages) {
+  // stages = [{label, count, color}]
+  const maxCount = Math.max(1, ...stages.map(s => s.count));
+  const rowH = 36, gap = 6, totalH = stages.length * (rowH + gap);
+  let html = `<svg viewBox="0 0 280 ${totalH}" style="width:100%;height:${totalH}px;">`;
+  stages.forEach((stage, i) => {
+    const y = i * (rowH + gap);
+    const pct = stage.count / maxCount;
+    const barW = 240 * pct;
+    const barX = (280 - barW) / 2;
+    html += `<text x="0" y="${y + rowH/2 + 4}" font-size="12" fill="rgba(255,255,255,0.85)" font-weight="bold">${stage.label}</text>`;
+    html += `<rect x="${barX}" y="${y + 4}" width="${barW}" height="${rowH - 8}" rx="6" fill="${stage.color}"/>`;
+    html += `<text x="140" y="${y + rowH/2 + 4}" text-anchor="middle" font-size="13" fill="#fff" font-weight="bold">${stage.count}</text>`;
+    if (i < stages.length - 1) {
+      html += `<text x="270" y="${y + rowH/2 + 4}" text-anchor="end" font-size="11" fill="rgba(255,255,255,0.5)">${Math.round(pct*100)}%</text>`;
+    }
+  });
+  html += '</svg>';
+  return html;
+}
+
+// 30-day line chart of class average
+function _renderLineChart(dailyData, options) {
+  // dailyData = [{date, avg, count}] length = 30
+  options = options || {};
+  const width = options.width || 320;
+  const height = options.height || 100;
+  const padTop = 8, padBot = 18, padLeft = 28, padRight = 8;
+  const chartW = width - padLeft - padRight;
+  const chartH = height - padTop - padBot;
+
+  if (!dailyData || dailyData.length === 0) {
+    return `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:${height}px;"><text x="${width/2}" y="${height/2}" text-anchor="middle" font-size="11" fill="rgba(255,255,255,0.4)">無資料</text></svg>`;
+  }
+
+  // Y-axis grid lines at 0, 50, 100
+  const gridLines = [0, 50, 100];
+  let html = `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:${height}px;">`;
+  gridLines.forEach(v => {
+    const y = padTop + chartH - (v / 100) * chartH;
+    html += `<line x1="${padLeft}" y1="${y}" x2="${width - padRight}" y2="${y}" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>`;
+    html += `<text x="${padLeft - 4}" y="${y + 3}" text-anchor="end" font-size="9" fill="rgba(255,255,255,0.4)">${v}</text>`;
+  });
+
+  const stepX = chartW / Math.max(1, dailyData.length - 1);
+  const points = dailyData.map((d, i) => {
+    const x = padLeft + i * stepX;
+    const y = padTop + chartH - (d.avg / 100) * chartH;
+    return { x, y, ...d };
+  });
+  const polyStr = points.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+
+  // Area fill
+  const areaPath = `M ${points[0].x},${padTop + chartH} L ${polyStr} L ${points[points.length-1].x},${padTop + chartH} Z`;
+  html += `<path d="${areaPath}" fill="rgba(124,58,237,0.3)"/>`;
+  html += `<polyline points="${polyStr}" fill="none" stroke="#7c3aed" stroke-width="2"/>`;
+  // Last point dot
+  const last = points[points.length - 1];
+  html += `<circle cx="${last.x.toFixed(1)}" cy="${last.y.toFixed(1)}" r="3" fill="#7c3aed"/>`;
+  // X labels (start, mid, end)
+  const labelIndices = [0, Math.floor(dailyData.length / 2), dailyData.length - 1];
+  labelIndices.forEach(i => {
+    const d = new Date(dailyData[i].date);
+    const label = `${d.getMonth() + 1}/${d.getDate()}`;
+    html += `<text x="${points[i].x.toFixed(1)}" y="${height - 4}" text-anchor="middle" font-size="9" fill="rgba(255,255,255,0.4)">${label}</text>`;
+  });
+  html += '</svg>';
+  return html;
+}
+
+// Pie chart for ASR engine distribution
+function _renderPieChart(slices) {
+  // slices = [{label, value, color, emoji}]
+  const total = slices.reduce((s, x) => s + x.value, 0);
+  const cx = 80, cy = 80, r = 70;
+  let html = `<svg viewBox="0 0 280 160" style="width:100%;height:160px;">`;
+  if (total === 0) {
+    html += `<text x="80" y="80" text-anchor="middle" font-size="11" fill="rgba(255,255,255,0.4)">無資料</text>`;
+  } else {
+    let angle = -Math.PI / 2;
+    slices.forEach(slice => {
+      if (slice.value === 0) return;
+      const sliceAngle = (slice.value / total) * Math.PI * 2;
+      const x1 = cx + r * Math.cos(angle);
+      const y1 = cy + r * Math.sin(angle);
+      const x2 = cx + r * Math.cos(angle + sliceAngle);
+      const y2 = cy + r * Math.sin(angle + sliceAngle);
+      const largeArc = sliceAngle > Math.PI ? 1 : 0;
+      const path = `M ${cx},${cy} L ${x1},${y1} A ${r},${r} 0 ${largeArc} 1 ${x2},${y2} Z`;
+      html += `<path d="${path}" fill="${slice.color}" stroke="#1a1a2e" stroke-width="2"/>`;
+      angle += sliceAngle;
+    });
+  }
+  // Legend
+  let legendY = 16;
+  slices.forEach(slice => {
+    const pct = total > 0 ? Math.round(slice.value / total * 100) : 0;
+    html += `<rect x="170" y="${legendY - 8}" width="12" height="12" rx="2" fill="${slice.color}"/>`;
+    html += `<text x="186" y="${legendY + 2}" font-size="11" fill="rgba(255,255,255,0.9)">${slice.emoji} ${slice.label}</text>`;
+    html += `<text x="276" y="${legendY + 2}" text-anchor="end" font-size="11" fill="rgba(255,255,255,0.6)">${slice.value} (${pct}%)</text>`;
+    legendY += 20;
+  });
+  html += '</svg>';
+  return html;
+}
+
+// Build last N days of attempt counts (for strip heatmap)
+function _buildDailyCounts(scores, days) {
+  days = days || 7;
+  const result = [];
+  const now = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+    const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+    const count = scores.filter(s => {
+      const t = new Date(s.at);
+      return t >= dayStart && t < dayEnd;
+    }).length;
+    result.push({ date: dayStart.toISOString(), count });
+  }
+  return result;
+}
+
+// Build 4-week heatmap data: array of 4 weeks, each = [7 days count]
+function _buildWeeklyHeatmap(scores) {
+  const result = [[], [], [], []];
+  const now = new Date();
+  for (let w = 0; w < 4; w++) {
+    for (let d = 0; d < 7; d++) {
+      const daysAgo = (3 - w) * 7 + (6 - d);
+      const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo);
+      const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+      const count = scores.filter(s => {
+        const t = new Date(s.at);
+        return t >= dayStart && t < dayEnd;
+      }).length;
+      result[w][d] = count;
+    }
+  }
+  return result;
+}
+
+// Build daily avg for N days (for line chart)
+function _buildDailyAvg(scores, days) {
+  days = days || 30;
+  const result = [];
+  const now = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+    const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+    const dayScores = scores.filter(s => {
+      const t = new Date(s.at);
+      return t >= dayStart && t < dayEnd;
+    });
+    result.push({
+      date: dayStart.toISOString(),
+      avg: dayScores.length > 0 ? Math.round(dayScores.reduce((sum, x) => sum + x.score, 0) / dayScores.length) : 0,
+      count: dayScores.length
+    });
+  }
+  return result;
+}
+
+// Calculate consecutive-day streak from scores.
+// Uses local-midnight YYYY-MM-DD keys (timezone-safe: a score at 23:00
+// in HK and a score at 01:00 the next day both bucket into the correct
+// local day, not UTC day). This fixes the previous `toDateString()` bug
+// where DST or TZ shifts could miscount streaks.
+function _calcStreak(scores) {
+  if (!scores || scores.length === 0) return 0;
+  const dayKey = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  const dates = new Set(scores.map(s => dayKey(new Date(s.at))));
+  let streak = 0;
+  const today = new Date();
+  // Allow today OR yesterday to be the streak start (don't break streak if not practiced today)
+  let checkDate = new Date(today);
+  if (!dates.has(dayKey(checkDate))) {
+    checkDate = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    if (!dates.has(dayKey(checkDate))) return 0;
+  }
+  while (dates.has(dayKey(checkDate))) {
+    streak++;
+    checkDate = new Date(checkDate.getTime() - 24 * 60 * 60 * 1000);
+  }
+  return streak;
+}
+
+// Compute class-wide weak passages (lowest avg score across all students)
+function _computeClassWeakSpots(scores) {
+  if (!Array.isArray(scores) || scores.length === 0) return [];
+  const byPassage = {};
+  scores.forEach(s => {
+    const key = s.passageTitle || s.passageId || '未知';
+    if (!byPassage[key]) byPassage[key] = { sum: 0, count: 0 };
+    byPassage[key].sum += s.score;
+    byPassage[key].count += 1;
+  });
+  return Object.entries(byPassage)
+    .filter(([_, info]) => info.count >= 1)
+    .map(([title, info]) => ({ word: title, avg: Math.round(info.sum / info.count), count: info.count }))
+    .sort((a, b) => a.avg - b.avg);
+}
+
+function showStudentDetail(studentId) {
+  const s = state.students.find(x => x.id === studentId);
+  if (!s) return;
+  const p = state.progress[studentId] || { byPassage: {}, records: [] };
+  const passageList = Object.entries(p.byPassage || {}).sort((a, b) => b[1].attempts - a[1].attempts);
+  const records = p.records || [];
+  const avg = records.length > 0 ? Math.round(records.reduce((sum, x) => sum + x.score, 0) / records.length) : 0;
+  const mastered = Object.values(p.byPassage || {}).filter(w => w.bestScore >= 80).length;
+
+  let html = `<div style="max-width:700px;margin:0 auto;">
+    <h2 style="color:#f59e0b;">${s.avatar || '🌟'} ${s.name} 朗讀記錄</h2>
+    <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin:10px 0;">
+      <div style="font-size:1.1em;margin-bottom:8px;">
+        總朗讀次數：<b>${p.totalAttempts || 0}</b>
+        ${p.lastSession ? '• 最後：' + new Date(p.lastSession).toLocaleString('zh-HK') : ''}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <div style="background:rgba(124,58,237,0.3);border-radius:8px;padding:8px 12px;text-align:center;flex:1;">
+          <div style="font-size:1.8em;font-weight:bold;">${p.totalAttempts || 0}</div>
+          <div style="font-size:0.8em;">朗讀次數</div>
+        </div>
+        <div style="background:rgba(245,158,11,0.3);border-radius:8px;padding:8px 12px;text-align:center;flex:1;">
+          <div style="font-size:1.8em;font-weight:bold;">${avg}</div>
+          <div style="font-size:0.8em;">平均分</div>
+        </div>
+        <div style="background:rgba(34,197,94,0.3);border-radius:8px;padding:8px 12px;text-align:center;flex:1;">
+          <div style="font-size:1.8em;font-weight:bold;">${mastered}</div>
+          <div style="font-size:0.8em;">朗讀成功</div>
+        </div>
+      </div>
+    </div>
+    <h3 style="color:#f59e0b;margin-top:20px;">逐篇文章</h3>
+    <div style="max-height:400px;overflow:auto;">`;
+  if (passageList.length === 0) {
+    html += '<div style="text-align:center;padding:30px 16px;"><p style="color:rgba(255,255,255,0.6);">尚未有朗讀記錄</p></div>';
+  } else {
+    passageList.forEach(([pid, data]) => {
+      const psg = state.passages.find(p => p.id === pid);
+      const title = psg ? psg.title : pid;
+      const status = data.bestScore >= 80 ? '✅' : data.bestScore >= 60 ? '👍' : '⚠️';
+      const lastTry = data.lastTry ? new Date(data.lastTry).toLocaleString('zh-HK', { month:'numeric', day:'numeric' }) : '';
+      const scoreTrend = (data.history || []).slice(-5).map(h => h.score);
+      const miniBar = scoreTrend.map(sc => {
+        const c = sc >= 80 ? '#22c55e' : sc >= 60 ? '#f59e0b' : '#ef4444';
+        return `<div style="display:inline-block;width:6px;height:${Math.max(4, sc/3)}px;background:${c};margin-right:2px;border-radius:2px;vertical-align:bottom;" title="${sc}分"></div>`;
+      }).join('');
+      html += `<div style="display:flex;align-items:center;gap:10px;padding:10px;background:rgba(255,255,255,0.05);border-radius:8px;margin:6px 0;">
+        <span style="font-size:1.5em;">${status}</span>
+        <div style="flex:1;">
+          <div style="font-weight:bold;font-size:1.1em;">📖 ${_e(title)}</div>
+          <div style="font-size:0.85em;color:rgba(255,255,255,0.6);">${data.attempts} 次嘗試 • 最高 ${data.bestScore} 分${lastTry ? ' • ' + lastTry : ''}</div>
+          <div style="margin-top:4px;display:flex;align-items:flex-end;height:36px;">${miniBar}</div>
+        </div>
+      </div>`;
+    });
+  }
+  html += `</div>
+    <div style="display:flex;gap:8px;margin-top:20px;">
+      <button onclick="exportStudentReport('${studentId}')" style="flex:1;background:#f59e0b;font-size:1em;padding:12px;">📄 匯出 PDF 報告</button>
+      <button onclick="renderDashboard();tchSwitchTab('dashboard');" style="flex:1;background:#666;font-size:1em;padding:12px;">返回 Dashboard</button>
+    </div>
+  </div>`;
+  document.getElementById('dashboardContent').innerHTML = html;
+}
+
+// ================== PDF REPORT EXPORT ==================
+function exportStudentReport(studentId) {
+  const s = state.students.find(x => x.id === studentId);
+  if (!s) return;
+  const p = state.progress[studentId] || { byPassage: {}, records: [] };
+  const passageList = Object.entries(p.byPassage || {}).sort((a, b) => b[1].attempts - a[1].attempts);
+  const records = p.records || [];
+  const avg = records.length > 0 ? Math.round(records.reduce((sum, x) => sum + x.score, 0) / records.length) : 0;
+  const mastered = Object.values(p.byPassage || {}).filter(w => w.bestScore >= 80).length;
+  const struggling = Object.values(p.byPassage || {}).filter(w => w.attempts >= 2 && w.bestScore < 60).length;
+
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="zh-HK"><head><title>${_e(s.name)} 朗讀報告</title>
+    <meta charset="UTF-8">
+    <style>
+      body { font-family: 'Microsoft JhengHei', sans-serif; padding: 40px; color: #1a1a2e; max-width: 800px; margin: 0 auto; }
+      h1 { color: #f59e0b; border-bottom: 4px solid #f59e0b; padding-bottom: 12px; }
+      .meta { color: #666; margin-bottom: 24px; }
+      .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 20px 0; }
+      .stat { background: #f3f4f6; border-radius: 12px; padding: 16px; text-align: center; }
+      .stat-num { font-size: 2.2em; font-weight: bold; color: #7c3aed; }
+      .stat-label { font-size: 0.95em; color: #666; margin-top: 4px; }
+      table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+      th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e5e7eb; }
+      th { background: #f59e0b; color: #fff; font-weight: bold; }
+      .status-ok { color: #22c55e; font-weight: bold; }
+      .status-warn { color: #ef4444; font-weight: bold; }
+      .status-mid { color: #f59e0b; font-weight: bold; }
+      .footer { margin-top: 40px; padding-top: 20px; border-top: 2px solid #e5e7eb; color: #999; font-size: 0.9em; text-align: center; }
+      .print-btn { background: #7c3aed; color: #fff; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-size: 1em; margin: 20px 0; }
+      @media print { .print-btn { display: none; } }
+    </style>
+  </head><body>
+    <button class="print-btn" onclick="window.print()">🖨️ 列印 / 存為 PDF</button>
+    <h1>${_e(s.avatar || '🌟')} ${_e(s.name)} — 朗讀評分報告</h1>
+    <div class="meta">
+      報告產生日期：${_e(new Date().toLocaleString('zh-HK'))}<br>
+      評估引擎：${_e(state.asrEngine)}
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="stat-num">${p.totalAttempts || 0}</div><div class="stat-label">朗讀次數</div></div>
+      <div class="stat"><div class="stat-num">${avg}</div><div class="stat-label">平均分</div></div>
+      <div class="stat"><div class="stat-num">${mastered}</div><div class="stat-label">朗讀成功</div></div>
+      <div class="stat"><div class="stat-num">${struggling}</div><div class="stat-label">待加強</div></div>
+    </div>
+    <h2>逐篇文章朗讀記錄</h2>
+    ${passageList.length === 0 ? '<div style="text-align:center;padding:30px 16px;"><p>尚未有朗讀記錄</p></div>' : `
+    <table>
+      <thead>
+        <tr><th>文章</th><th>嘗試</th><th>最高分</th><th>狀態</th><th>最後朗讀</th></tr>
+      </thead>
+      <tbody>
+        ${passageList.map(([pid, data]) => {
+          const psg = state.passages.find(p => p.id === pid);
+          const title = psg ? psg.title : pid;
+          const status = data.bestScore >= 80 ? '<span class="status-ok">✅ 成功</span>' : data.bestScore >= 60 ? '<span class="status-mid">👍 進步中</span>' : '<span class="status-warn">⚠️ 待加強</span>';
+          const lastTry = data.lastTry ? new Date(data.lastTry).toLocaleString('zh-HK') : '—';
+          return `<tr><td><b>${_e(title)}</b></td><td>${data.attempts}</td><td>${data.bestScore}</td><td>${status}</td><td>${_e(lastTry)}</td></tr>`;
+        }).join('')}
+      </tbody>
+    </table>`}
+    <div class="footer">
+      朗讀評分 — 散文・詩詞<br>
+      本報告由朗讀評分 App 自動產生
+    </div>
+  </body></html>`);
+  win.document.close();
+  showToast('📄 報告已開啟');
+}
+
+function exportClassReport() {
+  const totalAttempts = Object.values(state.progress).reduce((s, p) => s + (p.totalAttempts || 0), 0);
+  const weakSpots = _computeClassWeakSpots(Object.values(state.progress).flatMap(p => p.records || []));
+
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="zh-HK"><head><title>全班練習報告</title>
+    <meta charset="UTF-8">
+    <style>
+      body { font-family: 'Microsoft JhengHei', sans-serif; padding: 40px; color: #1a1a2e; max-width: 900px; margin: 0 auto; }
+      h1 { color: #f59e0b; border-bottom: 4px solid #f59e0b; padding-bottom: 12px; }
+      h2 { color: #7c3aed; margin-top: 30px; }
+      .meta { color: #666; margin-bottom: 24px; }
+      table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+      th, td { padding: 10px; text-align: left; border-bottom: 1px solid #e5e7eb; }
+      th { background: #7c3aed; color: #fff; }
+      .student-row td:first-child { font-weight: bold; }
+      .bar { display: inline-block; height: 14px; background: #7c3aed; vertical-align: middle; border-radius: 3px; }
+      .footer { margin-top: 40px; padding-top: 20px; border-top: 2px solid #e5e7eb; color: #999; font-size: 0.9em; text-align: center; }
+      .print-btn { background: #7c3aed; color: #fff; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-size: 1em; margin: 20px 0; }
+      @media print { .print-btn { display: none; } }
+    </style>
+  </head><body>
+    <button class="print-btn" onclick="window.print()">🖨️ 列印 / 存為 PDF</button>
+    <h1>📊 全班朗讀報告</h1>
+    <div class="meta">
+      報告產生日期：${new Date().toLocaleString('zh-HK')}<br>
+      學生人數：${state.students.length} • 總朗讀次數：${totalAttempts}
+    </div>
+    <h2>👨‍🎓 學生表現一覽</h2>
+    <table>
+      <thead><tr><th>學生</th><th>朗讀次數</th><th>平均分</th><th>朗讀成功</th><th>待加強</th><th>最後朗讀</th></tr></thead>
+      <tbody>
+        ${state.students.map(s => {
+          const p = state.progress[s.id] || {};
+          const records = p.records || [];
+          const avg = records.length > 0
+            ? Math.round(records.reduce((sum, x) => sum + x.score, 0) / records.length)
+            : 0;
+          const mastered = Object.values(p.byPassage || {}).filter(w => w.bestScore >= 80).length;
+          const struggling = Object.values(p.byPassage || {}).filter(w => w.attempts >= 2 && w.bestScore < 60).length;
+          const last = p.lastSession ? new Date(p.lastSession).toLocaleString('zh-HK', { month:'numeric', day:'numeric' }) : '—';
+          return `<tr class="student-row"><td>${s.avatar || '🌟'} ${_e(s.name)}</td><td>${p.totalAttempts || 0}</td><td>${avg}</td><td>${mastered}</td><td>${struggling}</td><td>${last}</td></tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    <h2>🎯 全班文章難點 Top ${Math.min(10, weakSpots.length)}</h2>
+    ${weakSpots.length === 0 ? '<p>無資料</p>' : `
+    <table>
+      <thead><tr><th>文章</th><th>全班平均分</th><th>朗讀次數</th><th>難度</th></tr></thead>
+      <tbody>
+        ${weakSpots.slice(0, 10).map(w => {
+          const difficulty = w.avg < 50 ? '🔴 困難' : w.avg < 70 ? '🟡 中等' : '🟢 容易';
+          return `<tr><td><b>${_e(w.word)}</b></td><td>${w.avg} 分</td><td>${w.count}</td><td>${difficulty}</td></tr>`;
+        }).join('')}
+      </tbody>
+    </table>`}
+    <div class="footer">
+      朗讀評分 — 散文・詩詞<br>
+      本報告由朗讀評分 App 自動產生
+    </div>
+  </body></html>`);
+  win.document.close();
+  showToast('📄 全班報告已開啟');
+}
+
+// ================== EXPORT / IMPORT STUDENTS ==================
+function exportStudentsJson() {
+  const data = {
+    _comment: 'SEN 粵語朗讀 — 學生資料 + 進度',
+    _exported_at: new Date().toISOString(),
+    students: state.students,
+    progress: state.progress
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'students_' + new Date().toISOString().slice(0, 10) + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('⬇️ 已下載學生資料');
+}
+
+function importStudentsJson(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data.students || !Array.isArray(data.students)) {
+        throw new Error('JSON 格式錯誤');
+      }
+      // Check for potential data loss: existing students with newer lastSession
+      const newerLocal = [];
+      (data.students || []).forEach(imp => {
+        const local = state.students.find(s => s.id === imp.id);
+        if (local) {
+          const localTs = state.progress[imp.id]?.lastSession || '';
+          const impTs = data.progress?.[imp.id]?.lastSession || '';
+          if (localTs && impTs && localTs > impTs) {
+            newerLocal.push(local.name);
+          }
+        }
+      });
+      const conflictNote = newerLocal.length > 0
+        ? `\n\n⚠️ 以下學生喺本地有新啲嘅記錄（${newerLocal.slice(0, 3).join('、')}${newerLocal.length > 3 ? '...' : ''}），匯入會保留本地版本。`
+        : '';
+      showConfirm(`將匯入 ${data.students.length} 個學生（同 ${Object.keys(data.progress || {}).length} 個進度記錄）。現有資料會被合併。${conflictNote}`, () => {
+        // Merge: by id, newer lastSession wins (keep local if it has newer data)
+        const existingById = {};
+        state.students.forEach(s => existingById[s.id] = s);
+        (data.students || []).forEach(imp => {
+          const local = state.students.find(s => s.id === imp.id);
+          if (!local) {
+            existingById[imp.id] = imp;
+          } else {
+            // Keep whichever record was updated more recently
+            const localTs = state.progress[imp.id]?.lastSession || '';
+            const impTs = data.progress?.[imp.id]?.lastSession || '';
+            if (!localTs || (impTs && impTs > localTs)) {
+              existingById[imp.id] = imp;
+            }
+            // else keep local (already present in existingById)
+          }
+        });
+        state.students = Object.values(existingById);
+        // Progress merge: same newer-wins strategy per student
+        if (data.progress) {
+          Object.entries(data.progress).forEach(([sid, impProg]) => {
+            const localProg = state.progress[sid];
+            const localTs = localProg?.lastSession || '';
+            const impTs = impProg?.lastSession || '';
+            if (!localTs || (impTs && impTs > localTs)) {
+              state.progress[sid] = impProg;
+            }
+            // else keep local progress
+          });
+        }
+        _persistStudents();
+        _persistProgress();
+        renderStudentList();
+        _renderLoginMode();
+        renderDashboard();
+        showToast('⬆️ 匯入成功！');
+      });
+    } catch(err) {
+      alert('匯入失敗：' + err.message);
+    }
+    event.target.value = '';
+  };
+  reader.readAsText(file);
+}
+
+// ================== TEACHER EDIT: TYPE TOGGLE ==================
+let _pendingTypeToggles = {};
+function toggleAdminType(typeId, checked) {
+  _pendingTypeToggles[typeId] = checked;
+}
+
+function renderAdminTypeList() {
+  const container = document.getElementById('adminTypeList');
+  if (!container) return;
+  if (state.types.length === 0) {
+    container.innerHTML = '<p style="color:#f59e0b;">尚無文章分類，請確認 data/passages.json 已正確載入。</p>';
+    return;
+  }
+  container.innerHTML = state.types.map(t => {
+    const passageCount = state.passages.filter(p => p.type === t.id).length;
+    return `<label style="display:flex;align-items:center;gap:12px;margin:10px 0;font-size:1.2em;cursor:pointer;">
+      <input type="checkbox" id="type_toggle_${_e(t.id)}"
+        ${t.enabled ? 'checked' : ''}
+        onchange="toggleAdminType('${_e(t.id)}', this.checked)"
+        style="width:26px;height:26px;accent-color:#f59e0b;">
+      <span style="font-weight:bold;color:#f59e0b;min-width:60px;">${_e(t.icon || '')} ${_e(t.label)}</span>
+      <span style="color:rgba(255,255,255,0.7);flex:1;">${_e(t.description || '')}</span>
+      <span style="background:rgba(255,255,255,0.15);padding:2px 10px;border-radius:12px;font-size:0.85em;">${passageCount}篇</span>
+    </label>`;
+  }).join('');
+}
+
+function saveAdminSettings() {
+  Object.keys(_pendingTypeToggles).forEach(typeId => {
+    const t = state.types.find(ty => ty.id === typeId);
+    if (t) t.enabled = _pendingTypeToggles[typeId];
+  });
+  _pendingTypeToggles = {};
+  const overrides = {};
+  state.types.forEach(t => { overrides[t.id] = t.enabled; });
+  localStorage.setItem('yueAdminSettings', JSON.stringify(overrides));
+  renderAdminTypeList();
+  renderPassageList();
+  showToast('✅ 設定已儲存！');
+}
+
+// ================== TEACHER EDIT: PASSAGE CRUD ==================
+let _editingPassageId = null;
+
+function renderPassageList() {
+  const container = document.getElementById('passageList');
+  if (!container) return;
+  if (state.passages.length === 0) {
+    container.innerHTML = '<p style="color:rgba(255,255,255,0.6);padding:12px 0;">尚無文章，請新增。</p>';
+    return;
+  }
+  container.innerHTML = state.passages.map(p => {
+    const type = state.types.find(t => t.id === p.type);
+    const stars = '⭐'.repeat(p.difficulty || 1);
+    return `<div style="display:flex;align-items:flex-start;gap:8px;padding:10px;background:rgba(255,255,255,0.05);border-radius:10px;margin:6px 0;border-left:4px solid ${p.type === 'poetry' ? '#7c3aed' : '#22c55e'};">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:bold;font-size:1.1em;margin-bottom:2px;">${_e(p.title)} <span style="font-size:0.85em;color:#f59e0b;">${stars}</span></div>
+        <div style="font-size:0.85em;color:rgba(255,255,255,0.6);">${type ? _e(type.icon + ' ' + type.label) : p.type} • ${_e(p.author || '')}</div>
+        <div style="font-size:0.8em;color:rgba(255,255,255,0.4);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(p.text)}</div>
+      </div>
+      <button onclick="editPassage('${_e(p.id)}')" style="background:#0ea5e9;min-height:36px;padding:6px 12px;font-size:0.9em;">✏️</button>
+      <button onclick="deletePassage('${_e(p.id)}')" style="background:#dc2626;min-height:36px;padding:6px 12px;font-size:0.9em;">🗑</button>
+    </div>`;
+  }).join('');
+}
+
+function addNewPassage() {
+  _editingPassageId = null;
+  openPassageModal({});
+}
+
+function editPassage(passageId) {
+  const psg = state.passages.find(p => p.id === passageId);
+  if (!psg) return;
+  _editingPassageId = passageId;
+  openPassageModal(psg);
+}
+
+function openPassageModal(psg) {
+  const modal = document.getElementById('passageModal');
+  if (!modal) return;
+  document.getElementById('pm_title').value = psg.title || '';
+  document.getElementById('pm_author').value = psg.author || '';
+  document.getElementById('pm_type').value = psg.type || 'prose';
+  document.getElementById('pm_difficulty').value = psg.difficulty || 1;
+  document.getElementById('pm_text').value = psg.text || '';
+  document.getElementById('pm_audio').value = psg.audioSeconds || 15;
+  document.getElementById('passageModalTitle').textContent = _editingPassageId ? '✏️ 編輯文章' : '✏️ 新增文章';
+  modal.style.display = 'block';
+}
+
+function closePassageModal() {
+  document.getElementById('passageModal').style.display = 'none';
+  _editingPassageId = null;
+}
+
+function savePassageFromModal() {
+  const title = document.getElementById('pm_title').value.trim();
+  const text = document.getElementById('pm_text').value.trim();
+  if (!title || !text) {
+    alert('請填寫標題和文章內容');
+    return;
+  }
+  const newPassage = {
+    id: _editingPassageId || ('p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)),
+    title,
+    author: document.getElementById('pm_author').value.trim(),
+    type: document.getElementById('pm_type').value,
+    difficulty: parseInt(document.getElementById('pm_difficulty').value) || 1,
+    text,
+    audioSeconds: parseInt(document.getElementById('pm_audio').value) || 15
+  };
+  if (_editingPassageId) {
+    const idx = state.passages.findIndex(p => p.id === _editingPassageId);
+    if (idx >= 0) state.passages[idx] = newPassage;
+  } else {
+    state.passages.push(newPassage);
+  }
+  _persistPassages();
+  closePassageModal();
+  renderPassageList();
+  renderAdminTypeList();
+  showToast('✅ 文章已儲存');
+}
+
+function deletePassage(passageId) {
+  const psg = state.passages.find(p => p.id === passageId);
+  if (!psg) return;
+  showConfirm(`確定刪除文章「${psg.title}」？`, () => {
+    state.passages = state.passages.filter(p => p.id !== passageId);
+    _persistPassages();
+    renderPassageList();
+    renderAdminTypeList();
+    showToast('🗑 文章已刪除');
+  });
+}
+
+function _persistPassages() {
+  localStorage.setItem('yuePassages', JSON.stringify(state.passages));
+}
+
+// ================== IMPORT / EXPORT ==================
+function exportPassagesJson() {
+  const data = {
+    _comment: '朗讀評分 — 文章資料庫',
+    _exported_at: new Date().toISOString(),
+    types: state.types,
+    passages: state.passages
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'passages_' + new Date().toISOString().slice(0, 10) + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('⬇️ 已下載 JSON');
+}
+
+function importPassagesJson(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data.passages || !Array.isArray(data.passages)) {
+        throw new Error('JSON 格式錯誤：缺少 passages 陣列');
+      }
+      showConfirm(`將匯入 ${data.passages.length} 篇文章。現有資料會被取代，確定？`, () => {
+        if (data.types) {
+          state.types = data.types;
+          state.types.forEach(t => { t.enabled = t.enabled !== false; });
+          localStorage.setItem('yueTypes', JSON.stringify(state.types));
+        }
+        state.passages = data.passages;
+        _persistPassages();
+        renderAdminTypeList();
+        renderPassageList();
+        showToast('⬆️ 匯入成功！');
+      });
+    } catch(err) {
+      alert('匯入失敗：' + err.message);
+    }
+    event.target.value = '';
+  };
+  reader.readAsText(file);
+}
+
+function resetToDefaultPassages() {
+  showConfirm('重設後將清除所有自訂文章，回到 data/passages.json 預設內容。確定？', async () => {
+    try {
+      const resp = await fetch('data/passages.json');
+      const data = await resp.json();
+      state.types = data.types || [];
+      state.passages = data.passages || [];
+      localStorage.removeItem('yueTypes');
+      localStorage.removeItem('yuePassages');
+      localStorage.removeItem('yueAdminSettings');
+      renderAdminTypeList();
+      renderPassageList();
+      showToast('🔄 已重設為預設值');
+    } catch(e) {
+      alert('重設失敗：' + e.message);
+    }
+  });
+}
+
+init();
+</script>
+</body>
+</html>
