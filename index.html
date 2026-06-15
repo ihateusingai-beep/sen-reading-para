@@ -84,6 +84,17 @@ button:active { transform:scale(0.95); }
   /* Very narrow phone: tighter grid */
   .student-avatar-card { min-height:90px !important; padding:10px 6px !important; }
 }
+
+/* P2.2 utility classes — extracted from inline styles.
+   Replaces repeated inline patterns to keep render functions readable
+   and to centralize visual tokens. Specificity kept low so the
+   per-element inline tweaks still win when needed. */
+.card-panel { background:rgba(255,255,255,0.05); border-radius:12px; padding:14px; margin-bottom:14px; }
+.text-muted { color:rgba(255,255,255,0.7); font-size:0.9em; }
+.text-xs    { font-size:0.85em; color:rgba(255,255,255,0.6); }
+.row-flex   { display:flex; align-items:center; gap:14px; }
+.bg-soft    { background:rgba(255,255,255,0.05); }
+.radius-12  { border-radius:12px; }
 </style>
 </head>
 <body>
@@ -1774,30 +1785,6 @@ function retryCurrentPassage() {
   else goTo('assessment');
 }
 
-function calculateSimilarity(a, b) {
-  if (a === b) return 1;
-  const longer = a.length > b.length ? a : b;
-  const shorter = a.length > b.length ? b : a;
-  if (longer.length === 0) return 1;
-  return (longer.length - editDistance(longer, shorter)) / longer.length;
-}
-
-function editDistance(a, b) {
-  const dp = Array(b.length + 1).fill(null).map(() => Array(a.length + 1).fill(0));
-  for (let i = 0; i <= a.length; i++) dp[0][i] = i;
-  for (let j = 0; j <= b.length; j++) dp[j][0] = j;
-  for (let j = 1; j <= b.length; j++) {
-    for (let i = 1; i <= a.length; i++) {
-      dp[j][i] = Math.min(
-        dp[j-1][i] + 1,
-        dp[j][i-1] + 1,
-        dp[j-1][i-1] + (a[i-1] === b[j-1] ? 0 : 1)
-      );
-    }
-  }
-  return dp[b.length][a.length];
-}
-
 function showCertModal() {
   const sid = state.currentStudentId;
   const cur = state.students.find(s => s.id === sid);
@@ -2971,7 +2958,7 @@ function renderDashboard() {
       { label: '進步中', count: practicingCount, color: '#f59e0b' },
       { label: '已掌握', count: masteredCount, color: '#22c55e' }
     ];
-    html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
+    html += `<div class="card-panel">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📊 Mastery 漏斗</p>
       <div style="font-size:0.85em;color:rgba(255,255,255,0.6);margin-bottom:10px;">全班 ${state.students.length} 學生 × ${state.passages.length} 篇文章 = ${totalSlots} 個進度</div>
       ${_renderFunnel(funnelStages)}
@@ -2981,7 +2968,7 @@ function renderDashboard() {
   // ===== 30-day class average line chart =====
   if (totalAttempts > 0) {
     const dailyData = _buildDailyAvg(allScores, 30);
-    html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
+    html += `<div class="card-panel">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📈 過去 30 日全班平均分</p>
       ${_renderLineChart(dailyData)}
     </div>`;
@@ -2991,7 +2978,7 @@ function renderDashboard() {
   if (totalAttempts > 0) {
     const weeklyData = _buildWeeklyHeatmap(allScores);
     const totalActive = allScores.length;
-    html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
+    html += `<div class="card-panel">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">🟩 過去 4 週活躍度（總 ${totalActive} 次）</p>
       ${_renderWeekHeatmap(weeklyData)}
     </div>`;
@@ -3003,7 +2990,7 @@ function renderDashboard() {
     const barItems = passageDifficulty.slice(0, 5).map(w => ({
       label: w.word, value: w.avg, count: w.count
     }));
-    html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
+    html += `<div class="card-panel">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:4px;">🎯 全班難點文章 Top 5</p>
       ${_renderBarChart(barItems, 100, null)}
     </div>`;
@@ -3033,7 +3020,7 @@ function renderDashboard() {
         emoji: e.costEmoji
       };
     });
-    html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
+    html += `<div class="card-panel">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">🎙 評估引擎使用分佈</p>
       ${_renderPieChart(slices)}
     </div>`;
@@ -3052,7 +3039,7 @@ function renderDashboard() {
       .slice(0, 6);
     const ratioPct = (fillerRollup.ratio * 100).toFixed(1);
     const ratioColor = fillerRollup.ratio < 0.05 ? '#22c55e' : fillerRollup.ratio < 0.15 ? '#f59e0b' : '#ef4444';
-    html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
+    html += `<div class="card-panel">
       <p style="font-weight:bold;color:#ec4899;margin-bottom:8px;">🤐 口頭禪分析（全班）</p>
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;">
         <div style="font-size:2.2em;font-weight:bold;color:${ratioColor};">${ratioPct}%</div>
