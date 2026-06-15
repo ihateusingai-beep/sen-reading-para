@@ -107,13 +107,13 @@ button:active { transform:scale(0.95); }
         <div id="confirmCardName" style="font-size:2em;font-weight:bold;color:#f59e0b;margin-bottom:8px;"></div>
         <div style="color:rgba(255,255,255,0.7);font-size:1.1em;margin-bottom:28px;">係你嗎？</div>
         <button id="confirmCardYes" style="width:100%;background:#22c55e;font-size:1.3em;padding:16px;border-radius:16px;min-height:64px;">係，開始 ✅</button>
-        <button onclick="cancelCardLogin()" style="margin-top:12px;background:#444;color:#fff;font-size:1.1em;padding:12px;border-radius:14px;width:100%;min-height:52px;">唔係，取消</button>
+        <button onclick="App.cancelCardLogin()" style="margin-top:12px;background:#444;color:#fff;font-size:1.1em;padding:12px;border-radius:14px;width:100%;min-height:52px;">唔係，取消</button>
       </div>
     </div>
 
     <!-- Teacher entry — small, unobtrusive, at bottom -->
     <div style="margin-top:48px;padding-top:24px;border-top:1px solid rgba(255,255,255,0.15);">
-      <button onclick="enterTeacherMode()" style="background:transparent;color:rgba(255,255,255,0.45);font-size:0.9em;padding:10px 20px;min-height:44px;border:1px solid rgba(255,255,255,0.2);border-radius:10px;">🔧 老師模式</button>
+      <button onclick="App.enterTeacherMode()" style="background:transparent;color:rgba(255,255,255,0.45);font-size:0.9em;padding:10px 20px;min-height:44px;border:1px solid rgba(255,255,255,0.2);border-radius:10px;">🔧 老師模式</button>
     </div>
 
     <div id="engineStatusHome" style="margin-top:16px;font-size:0.85em;color:rgba(255,255,255,0.4);"></div>
@@ -125,13 +125,13 @@ button:active { transform:scale(0.95); }
   <div style="max-width:800px;margin:40px auto;text-align:center;">
     <div id="hubGreeting" style="font-size:2em;margin-bottom:30px;">👋 你好，準備好未？</div>
     <div class="hub-grid">
-      <div class="hub-card" onclick="goTo('assessment');startAssessment();">
+      <div class="hub-card" onclick="App.goTo('assessment');App.startAssessment();">
         <div class="hub-icon">📖</div>
         <div style="font-size:1.5em;font-weight:bold;">朗讀</div>
         <div style="opacity:0.8;">揀文章朗讀評分</div>
         <div id="hubAssessment" style="margin-top:12px;"></div>
       </div>
-      <div class="hub-card" onclick="showMyProgress();">
+      <div class="hub-card" onclick="App.showMyProgress();">
         <div class="hub-icon">⭐</div>
         <div style="font-size:1.5em;font-weight:bold;">我的進度</div>
         <div style="opacity:0.8;">睇下我讀過咩</div>
@@ -141,10 +141,10 @@ button:active { transform:scale(0.95); }
     <!-- 老師設定面板（預設折疊） -->
     <!-- 老師入口（細字，避免學生混淆） -->
     <div style="margin-top:30px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.15);text-align:center;">
-      <button onclick="enterTeacherMode()" style="background:transparent;color:rgba(255,255,255,0.5);font-size:0.9em;padding:8px 16px;min-height:36px;border:1px solid rgba(255,255,255,0.2);border-radius:8px;">🔧 老師模式</button>
+      <button onclick="App.enterTeacherMode()" style="background:transparent;color:rgba(255,255,255,0.5);font-size:0.9em;padding:8px 16px;min-height:36px;border:1px solid rgba(255,255,255,0.2);border-radius:8px;">🔧 老師模式</button>
     </div>
 
-    <button onclick="goTo('home')" style="margin-top:20px;background:#666;">🏠 返回首頁</button>
+    <button onclick="App.goTo('home')" style="margin-top:20px;background:#666;">🏠 返回首頁</button>
     <div id="engineIndicator" style="margin-top:14px;font-size:0.85em;color:rgba(255,255,255,0.5);"></div>
   </div>
 </div>
@@ -153,7 +153,7 @@ button:active { transform:scale(0.95); }
 <div id="assessment" class="page">
   <h2>📖 朗讀評估</h2>
   <div id="assessmentContent" style="max-width:700px;margin:0 auto;"></div>
-  <button onclick="updateHubStatus();goTo('hub')" style="margin:30px auto;display:block;background:#666;">🏠 返回中心</button>
+  <button onclick="App.updateHubStatus();App.goTo('hub')" style="margin:30px auto;display:block;background:#666;">🏠 返回中心</button>
 </div>
 
 <!-- MY PROGRESS (student-facing) -->
@@ -167,14 +167,14 @@ button:active { transform:scale(0.95); }
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
       <h1 style="color:#f59e0b;font-size:1.8em;margin:0;">🔧 老師工作台</h1>
       <div style="flex:1;"></div>
-      <button onclick="exitTeacherMode()" style="background:#666;font-size:1em;padding:10px 20px;min-height:44px;border-radius:10px;">🚪 退出</button>
+      <button onclick="App.exitTeacherMode()" style="background:#666;font-size:1em;padding:10px 20px;min-height:44px;border-radius:10px;">🚪 退出</button>
     </div>
     <!-- Tab nav -->
     <div style="display:flex;gap:8px;margin-bottom:20px;border-bottom:2px solid rgba(255,255,255,0.2);flex-wrap:wrap;">
-      <button id="tchTabDashboardBtn" onclick="tchSwitchTab('dashboard')" style="flex:1;min-width:120px;background:#7c3aed;font-size:1em;padding:12px;border-radius:8px 8px 0 0;min-height:48px;">📊 Dashboard</button>
-      <button id="tchTabStudentsBtn" onclick="tchSwitchTab('students')" style="flex:1;min-width:120px;background:#444;font-size:1em;padding:12px;border-radius:8px 8px 0 0;min-height:48px;">👨‍🎓 學生</button>
-      <button id="tchTabEditBtn" onclick="tchSwitchTab('edit')" style="flex:1;min-width:120px;background:#444;font-size:1em;padding:12px;border-radius:8px 8px 0 0;min-height:48px;">📝 文章</button>
-      <button id="tchTabSettingsBtn" onclick="tchSwitchTab('settings')" style="flex:1;min-width:120px;background:#444;font-size:1em;padding:12px;border-radius:8px 8px 0 0;min-height:48px;">⚙️ 系統</button>
+      <button id="tchTabDashboardBtn" onclick="App.tchSwitchTab('dashboard')" style="flex:1;min-width:120px;background:#7c3aed;font-size:1em;padding:12px;border-radius:8px 8px 0 0;min-height:48px;">📊 Dashboard</button>
+      <button id="tchTabStudentsBtn" onclick="App.tchSwitchTab('students')" style="flex:1;min-width:120px;background:#444;font-size:1em;padding:12px;border-radius:8px 8px 0 0;min-height:48px;">👨‍🎓 學生</button>
+      <button id="tchTabEditBtn" onclick="App.tchSwitchTab('edit')" style="flex:1;min-width:120px;background:#444;font-size:1em;padding:12px;border-radius:8px 8px 0 0;min-height:48px;">📝 文章</button>
+      <button id="tchTabSettingsBtn" onclick="App.tchSwitchTab('settings')" style="flex:1;min-width:120px;background:#444;font-size:1em;padding:12px;border-radius:8px 8px 0 0;min-height:48px;">⚙️ 系統</button>
     </div>
     <div id="tchTabDashboard" class="tch-tab-content"></div>
     <div id="tchTabStudents" class="tch-tab-content" style="display:none;"></div>
@@ -206,8 +206,8 @@ button:active { transform:scale(0.95); }
 
     <!-- TTS / Replay buttons -->
     <div style="display:flex;gap:8px;margin-top:14px;">
-      <button id="resultListenBtn" onclick="_resultListen()" style="flex:1;background:#0ea5e9;font-size:1.05em;padding:12px;">🔊 聽示範</button>
-      <button id="resultReplayBtn" onclick="_resultReplay()" style="flex:1;background:#7c3aed;font-size:1.05em;padding:12px;">▶ 聽自己</button>
+      <button id="resultListenBtn" onclick="App._resultListen()" style="flex:1;background:#0ea5e9;font-size:1.05em;padding:12px;">🔊 聽示範</button>
+      <button id="resultReplayBtn" onclick="App._resultReplay()" style="flex:1;background:#7c3aed;font-size:1.05em;padding:12px;">▶ 聽自己</button>
     </div>
 
     <!-- Word retry section: hidden until scoring produces a wrong-word list -->
@@ -219,10 +219,10 @@ button:active { transform:scale(0.95); }
     <div id="resultAI" style="background:#f3e8ff;padding:14px;border-radius:14px;margin:14px 0;text-align:left;font-size:0.9em;"></div>
 
     <div style="display:flex;gap:8px;margin-top:20px;" id="resultActions">
-      <button onclick="retryCurrentPassage()" style="flex:1;background:#f59e0b;font-size:1.1em;padding:14px;">🔄 再讀一次</button>
-      <button onclick="showPassageSelector()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">📖 其他文章 →</button>
+      <button onclick="App.retryCurrentPassage()" style="flex:1;background:#f59e0b;font-size:1.1em;padding:14px;">🔄 再讀一次</button>
+      <button onclick="App.showPassageSelector()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">📖 其他文章 →</button>
     </div>
-    <button onclick="showCertModal()" style="margin-top:12px;background:#7c3aed;width:100%;font-size:1.1em;padding:14px;">🏆 睇我嘅證書</button>
+    <button onclick="App.showCertModal()" style="margin-top:12px;background:#7c3aed;width:100%;font-size:1.1em;padding:14px;">🏆 睇我嘅證書</button>
   </div>
 </div>
 
@@ -234,11 +234,11 @@ button:active { transform:scale(0.95); }
     <div id="wordRepracticeContext" style="color:rgba(0,0,0,0.7);margin-bottom:16px;font-size:1em;"></div>
     <div id="wordRepracticeStatus" style="min-height:80px;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.05);border-radius:14px;padding:14px;margin:14px 0;"></div>
     <div style="display:flex;gap:8px;">
-      <button id="wordRepracticeListen" onclick="_repracticeListen()" style="flex:1;background:#0ea5e9;font-size:1em;padding:12px;">🔊 聽示範</button>
-      <button id="wordRepracticeRec" onclick="_repracticeRecord()" style="flex:1;background:#ef4444;font-size:1em;padding:12px;">🎤 讀一次</button>
+      <button id="wordRepracticeListen" onclick="App._repracticeListen()" style="flex:1;background:#0ea5e9;font-size:1em;padding:12px;">🔊 聽示範</button>
+      <button id="wordRepracticeRec" onclick="App._repracticeRecord()" style="flex:1;background:#ef4444;font-size:1em;padding:12px;">🎤 讀一次</button>
     </div>
     <div id="wordRepracticeResult" style="margin-top:14px;"></div>
-    <button onclick="goTo('result')" style="margin-top:14px;background:#444;width:100%;font-size:1em;padding:12px;">↩ 返去睇結果</button>
+    <button onclick="App.goTo('result')" style="margin-top:14px;background:#444;width:100%;font-size:1em;padding:12px;">↩ 返去睇結果</button>
   </div>
 </div>
 
@@ -285,8 +285,8 @@ button:active { transform:scale(0.95); }
       </label>
     </div>
     <div style="display:flex;gap:8px;margin-top:20px;">
-      <button onclick="savePassageFromModal()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">💾 儲存</button>
-      <button onclick="closePassageModal()" style="flex:1;background:#666;font-size:1.1em;padding:14px;">取消</button>
+      <button onclick="App.savePassageFromModal()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">💾 儲存</button>
+      <button onclick="App.closePassageModal()" style="flex:1;background:#666;font-size:1.1em;padding:14px;">取消</button>
     </div>
   </div>
 </div>
@@ -311,8 +311,8 @@ button:active { transform:scale(0.95); }
       </label>
     </div>
     <div style="display:flex;gap:8px;margin-top:20px;">
-      <button onclick="saveStudentFromModal()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">💾 儲存</button>
-      <button onclick="closeStudentModal()" style="flex:1;background:#666;font-size:1.1em;padding:14px;">取消</button>
+      <button onclick="App.saveStudentFromModal()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">💾 儲存</button>
+      <button onclick="App.closeStudentModal()" style="flex:1;background:#666;font-size:1.1em;padding:14px;">取消</button>
     </div>
   </div>
 </div>
@@ -323,7 +323,7 @@ button:active { transform:scale(0.95); }
     <p id="confirmMsg" style="font-size:1.2em;margin-bottom:20px;"></p>
     <div style="display:flex;gap:12px;">
       <button id="confirmYes" style="flex:1;background:#dc2626;font-size:1.1em;padding:14px;">確認</button>
-      <button onclick="closeConfirmModal()" style="flex:1;background:#666;font-size:1.1em;padding:14px;">取消</button>
+      <button onclick="App.closeConfirmModal()" style="flex:1;background:#666;font-size:1.1em;padding:14px;">取消</button>
     </div>
   </div>
 </div>
@@ -358,6 +358,73 @@ function _e(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// ================== SCORING CONSTANTS ==================
+// Single source of truth for tier thresholds + history caps. Reused by
+// _tierFromScore, _scoreColor, _recordPassageAttempt, renderDashboard.
+const SCORING = Object.freeze({
+  TIER_GOLD:   90,
+  TIER_SILVER: 75,
+  TIER_BRONZE: 60,
+  HISTORY_CAP_PER_PASSAGE: 20,   // bp.history.length cap
+  HISTORY_CAP_PER_STUDENT: 200,  // p.records.length cap
+});
+
+// ================== TIER / COLOR HELPERS ==================
+// Convert a numeric score to its UI tier (label, color, emoji).
+// Replaces the 2 inline ladders in scorePassage() and showCertModal().
+function _tierFromScore(total) {
+  if (total >= SCORING.TIER_GOLD)   return { label: '金',   color: '#ffd700', emoji: '🥇' };
+  if (total >= SCORING.TIER_SILVER) return { label: '銀',   color: '#c0c0c0', emoji: '🥈' };
+  if (total >= SCORING.TIER_BRONZE) return { label: '銅',   color: '#cd7f32', emoji: '🥉' };
+  return                                    { label: '參與', color: '#7c3aed', emoji: '🌟' };
+}
+
+// Status color for sub-scores, dots, sparklines. Replaces 5+ copy-paste ladders.
+function _scoreColor(score) {
+  return score >= SCORING.TIER_GOLD   ? '#22c55e'
+       : score >= SCORING.TIER_BRONZE ? '#f59e0b'
+       :                                '#ef4444';
+}
+
+// ================== STORAGE SCHEMA ==================
+// localStorage keys: yuePassages / yueTypes / yueAdminSettings / yueStudents
+// / yueProgress / yueAsrEngine / yueLastStudentId / yueTeacherPassHash /
+// yueSeededDemo_v2 / yueAudioBaselines. Bump _SCHEMA_VERSION when shape changes
+// and add a migration entry in _migrateIfNeeded().
+const _SCHEMA_VERSION = 2;
+const _SCHEMA_VERSION_KEY = 'yueSchemaVersion';
+
+// Defensive sanitize a single student's progress object on load.
+// Returns a normalized object that downstream code can trust (no missing fields).
+function _sanitizeProgress(p) {
+  if (!p || typeof p !== 'object') return { byPassage: {}, records: [], totalAttempts: 0 };
+  return {
+    byPassage: (p.byPassage && typeof p.byPassage === 'object') ? p.byPassage : {},
+    records: Array.isArray(p.records) ? p.records : [],
+    totalAttempts: Number(p.totalAttempts) || 0,
+    lastSession: p.lastSession || null
+  };
+}
+
+// Run once on init: bring any persisted data up to the current schema version.
+function _migrateIfNeeded() {
+  const stored = parseInt(localStorage.getItem(_SCHEMA_VERSION_KEY) || '0', 10);
+  if (stored >= _SCHEMA_VERSION) return;
+  // v1 → v2: progress entries may be missing byPassage/records/totalAttempts.
+  // Sanitize on read instead of bulk-rewriting localStorage.
+  try {
+    const raw = JSON.parse(localStorage.getItem('yueProgress') || '{}');
+    const cleaned = {};
+    for (const sid of Object.keys(raw || {})) cleaned[sid] = _sanitizeProgress(raw[sid]);
+    state.progress = cleaned;
+    _persistProgress();
+  } catch (e) {
+    console.warn('[migrate] progress sanitize failed', e);
+    state.progress = {};
+  }
+  localStorage.setItem(_SCHEMA_VERSION_KEY, String(_SCHEMA_VERSION));
 }
 
 // ================== ASR ENGINE LAYER ==================
@@ -563,8 +630,8 @@ function showPassageSelector() {
   if (passages.length === 0) {
     container.innerHTML = `<div style="text-align:center;padding:40px;color:#f59e0b;font-size:1.3em;">
       尚未有任何文章<br>請先到老師設定加入文章
-      <button onclick="enterTeacherMode()" style="margin-top:16px;background:#555;font-size:1em;padding:12px 24px;">🔧 老師設定</button>
-      <br><button onclick="goTo('hub')" style="margin-top:12px;background:#666;font-size:1em;padding:12px 24px;">返回</button>
+      <button onclick="App.enterTeacherMode()" style="margin-top:16px;background:#555;font-size:1em;padding:12px 24px;">🔧 老師設定</button>
+      <br><button onclick="App.goTo('hub')" style="margin-top:12px;background:#666;font-size:1em;padding:12px 24px;">返回</button>
     </div>`;
     goTo('assessment');
     return;
@@ -584,9 +651,9 @@ function showPassageSelector() {
   const allEnabled = types.filter(t => t.enabled);
   if (allEnabled.length > 1) {
     html += `<div style="display:flex;gap:8px;justify-content:center;margin-bottom:20px;flex-wrap:wrap;">`;
-    html += `<button onclick="filterPassages('all')" id="filterBtn_all" style="background:#7c3aed;font-size:1em;padding:10px 18px;min-height:48px;border-radius:20px;">全部</button>`;
+    html += `<button onclick="App.filterPassages('all')" id="filterBtn_all" style="background:#7c3aed;font-size:1em;padding:10px 18px;min-height:48px;border-radius:20px;">全部</button>`;
     allEnabled.forEach(t => {
-      html += `<button onclick="filterPassages('${_e(t.id)}')" id="filterBtn_${_e(t.id)}" style="background:#444;font-size:1em;padding:10px 18px;min-height:48px;border-radius:20px;">${_e(t.icon || '')} ${_e(t.label)}</button>`;
+      html += `<button onclick="App.filterPassages('${_e(t.id)}')" id="filterBtn_${_e(t.id)}" style="background:#444;font-size:1em;padding:10px 18px;min-height:48px;border-radius:20px;">${_e(t.icon || '')} ${_e(t.label)}</button>`;
     });
     html += `</div>`;
   }
@@ -611,7 +678,7 @@ function showPassageSelector() {
   });
   html += `</div>`;
 
-  html += `<button onclick="goTo('hub')" style="margin-top:24px;background:#666;width:80%;">🏠 返回中心</button>`;
+  html += `<button onclick="App.goTo('hub')" style="margin-top:24px;background:#666;width:80%;">🏠 返回中心</button>`;
   html += `</div>`;
 
   container.innerHTML = html;
@@ -673,13 +740,13 @@ function startPassageReading(passage) {
 
       <!-- Recording area -->
       <div id="recordingArea" style="margin:16px 0;">
-        <button id="startRecBtn" style="background:#ef4444;width:100%;font-size:1.8em;padding:24px;border-radius:20px;min-height:100px;" onclick="startRecording()">
+        <button id="startRecBtn" style="background:#ef4444;width:100%;font-size:1.8em;padding:24px;border-radius:20px;min-height:100px;" onclick="App.startRecording()">
           🎤 開始朗讀
         </button>
         <div id="recordingStatus" style="text-align:center;margin-top:16px;font-size:1.2em;color:#f59e0b;min-height:60px;"></div>
       </div>
 
-      <button onclick="showPassageSelector()" style="margin-top:16px;background:#666;width:100%;">← 選擇其他文章</button>
+      <button onclick="App.showPassageSelector()" style="margin-top:16px;background:#666;width:100%;">← 選擇其他文章</button>
     </div>
   `;
 
@@ -724,7 +791,7 @@ function startRecording() {
     <div style="display:flex;flex-direction:column;align-items:center;gap:12px;margin:8px 0;">
       <div style="font-size:1.4em;color:#ef4444;font-weight:bold;">🔴 錄音中</div>
       <div style="font-size:1em;color:rgba(255,255,255,0.7);">大聲朗讀文章，準備好就撳「完成」 👄</div>
-      <button onclick="_stopRecordingFromUI()" style="background:#22c55e;font-size:1.2em;padding:14px 32px;min-height:56px;border-radius:14px;color:#fff;min-width:160px;">⏹ 完成</button>
+      <button onclick="App._stopRecordingFromUI()" style="background:#22c55e;font-size:1.2em;padding:14px 32px;min-height:56px;border-radius:14px;color:#fff;min-width:160px;">⏹ 完成</button>
     </div>`;
 
   // For non-WebSpeech engines, we use MediaRecorder to capture audio blob
@@ -1123,10 +1190,7 @@ function scorePassage(transcript, opts) {
     _recordPassageAttempt(p.id, p.title, scoreResult.total, transcript);
 
     goTo('result');
-    const tier = scoreResult.total >= 90 ? { label: '金', color: '#ffd700', emoji: '🥇' }
-                : scoreResult.total >= 75 ? { label: '銀', color: '#c0c0c0', emoji: '🥈' }
-                : scoreResult.total >= 60 ? { label: '銅', color: '#cd7f32', emoji: '🥉' }
-                : { label: '參與', color: '#7c3aed', emoji: '🌟' };
+    const tier = _tierFromScore(scoreResult.total);
 
     document.getElementById('resultWord').textContent = p.title;
     document.getElementById('resultScore').textContent = scoreResult.total + '/100';
@@ -1144,7 +1208,7 @@ function scorePassage(transcript, opts) {
       <div style="margin-bottom:6px;"><b>文章：</b>${_e(target)}</div>
       <div style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜方法：${_e(scoringMethod)}</div>`;
 
-    if (scoreResult.total >= 80) showConfetti(15);
+    if (scoreResult.total >= SCORING.TIER_GOLD) showConfetti(15);
   });
 }
 
@@ -1160,7 +1224,7 @@ function _renderSubScores(sub) {
   el.innerHTML = items.map(it => {
     const v = sub[it.key] || 0;
     const pct = Math.max(0, Math.min(100, v));
-    const barColor = pct >= 80 ? '#22c55e' : pct >= 60 ? '#f59e0b' : '#ef4444';
+    const barColor = _scoreColor(pct);
     return `<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:10px 8px;text-align:left;">
       <div style="font-size:0.85em;color:#6b7280;display:flex;justify-content:space-between;align-items:center;">
         <span>${it.icon} ${it.label}</span>
@@ -1273,7 +1337,7 @@ function _renderWordRetryList(wrongChars, passage) {
   // De-dup and cap at first 12
   const uniq = [...new Set(wrongChars)].slice(0, 12);
   list.innerHTML = uniq.map(ch =>
-    `<button onclick="_startWordRepractice('${_e(ch)}')" style="background:#fff;color:#dc2626;border:2px solid #dc2626;font-size:1.1em;padding:8px 14px;min-height:48px;border-radius:10px;font-weight:bold;">${_e(ch)}</button>`
+    `<button onclick="App._startWordRepractice('${_e(ch)}')" style="background:#fff;color:#dc2626;border:2px solid #dc2626;font-size:1.1em;padding:8px 14px;min-height:48px;border-radius:10px;font-weight:bold;">${_e(ch)}</button>`
   ).join('');
   wrap.style.display = 'block';
 }
@@ -1481,33 +1545,37 @@ function showCertModal() {
   const passageTitle = passage ? passage.title : '朗讀評估';
   const passageType = passage ? (state.types.find(t => t.id === passage.type) || { label: passage.type, icon: '📖' }) : { label: '朗讀', icon: '📖' };
 
-  // Get last score from progress
-  const p = sid ? (state.progress[sid] || {}) : {};
-  const records = p.records || [];
+  // Get last score from progress (sanitize on read to handle stale localStorage)
+  const p = _sanitizeProgress(sid ? state.progress[sid] : null);
+  const records = p.records;
   const lastRecord = records.length > 0 ? records[records.length - 1] : null;
   const score = lastRecord ? lastRecord.score : 0;
   const best = records.length > 0 ? Math.max(...records.map(r => r.score)) : score;
 
-  let tierLabel = '參與', tierEmoji = '🌟', tierColor = '#7c3aed';
-  if (score >= 90) { tierLabel = '金'; tierEmoji = '🥇'; tierColor = '#ffd700'; }
-  else if (score >= 75) { tierLabel = '銀'; tierEmoji = '🥈'; tierColor = '#c0c0c0'; }
-  else if (score >= 60) { tierLabel = '銅'; tierEmoji = '🥉'; tierColor = '#cd7f32'; }
+  // Single source of truth for the tier ladder
+  const tier = _tierFromScore(score);
+  const tierLabel = tier.label;
+  const tierEmoji = tier.emoji;
+  const tierColor = tier.color;
 
   const achievements = [];
   if (records.length >= 5) achievements.push({ emoji: '📚', label: '勤讀' });
-  if (best >= 80) achievements.push({ emoji: '⭐', label: '高分' });
+  if (best >= SCORING.TIER_GOLD) achievements.push({ emoji: '⭐', label: '高分' });
   if (records.length >= 10) achievements.push({ emoji: '🏆', label: '持久' });
 
   const cert = document.getElementById('certContent');
+  // XSS fix: ALL teacher/student-controlled fields wrapped in _e().
+  // Emoji fields (studentAvatar, passageType.icon, tierEmoji) come from
+  // pre-defined lists in state, not user input — left unescaped intentionally.
   cert.innerHTML = `
     <div style="background:linear-gradient(135deg,#fffbeb,#fef3c7);border:6px solid ${tierColor};border-radius:24px;padding:32px 24px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.3);position:relative;overflow:hidden;">
-      <div style="font-size:5em;margin-bottom:8px;">${studentAvatar}</div>
+      <div style="font-size:5em;margin-bottom:8px;">${_e(studentAvatar)}</div>
       <div style="font-size:1em;color:#92400e;letter-spacing:4px;font-weight:bold;margin-bottom:8px;">🏆 朗 讀 評 分 證 書 🏆</div>
 
       <div style="border-top:3px solid ${tierColor};border-bottom:3px solid ${tierColor};padding:20px 0;margin:16px 0;">
         <div style="font-size:1em;color:#78350f;margin-bottom:8px;">茲 證 明</div>
-        <div style="font-size:2.5em;font-weight:bold;color:#92400e;margin:8px 0;">${studentName}</div>
-        <div style="font-size:1.1em;color:#78350f;margin-top:8px;">完成 ${passageType.icon} ${passageTitle} 朗讀評估</div>
+        <div style="font-size:2.5em;font-weight:bold;color:#92400e;margin:8px 0;">${_e(studentName)}</div>
+        <div style="font-size:1.1em;color:#78350f;margin-top:8px;">完成 ${_e(passageType.icon)} ${_e(passageTitle)} 朗讀評估</div>
       </div>
 
       <div style="background:rgba(255,255,255,0.5);border-radius:16px;padding:16px;margin:16px 0;">
@@ -1528,23 +1596,23 @@ function showCertModal() {
       </div>
 
       <div style="margin:16px 0;">
-        <div style="font-size:5em;margin-bottom:8px;">${tierEmoji}</div>
-        <div style="display:inline-block;background:${tierColor};color:#fff;padding:6px 20px;border-radius:24px;font-weight:bold;font-size:1.1em;letter-spacing:2px;">${tierLabel} 獎</div>
+        <div style="font-size:5em;margin-bottom:8px;">${_e(tierEmoji)}</div>
+        <div style="display:inline-block;background:${tierColor};color:#fff;padding:6px 20px;border-radius:24px;font-weight:bold;font-size:1.1em;letter-spacing:2px;">${_e(tierLabel)} 獎</div>
       </div>
 
       ${achievements.length > 0 ? `
         <div style="margin:16px 0;">
           <div style="font-size:0.95em;color:#92400e;margin-bottom:8px;">🏅 成就</div>
           <div style="display:flex;justify-content:center;flex-wrap:wrap;gap:8px;">
-            ${achievements.map(a => `<div style="background:rgba(255,255,255,0.7);border-radius:12px;padding:6px 12px;font-size:1em;font-weight:bold;color:#92400e;">${a.emoji} ${a.label}</div>`).join('')}
+            ${achievements.map(a => `<div style="background:rgba(255,255,255,0.7);border-radius:12px;padding:6px 12px;font-size:1em;font-weight:bold;color:#92400e;">${_e(a.emoji)} ${_e(a.label)}</div>`).join('')}
           </div>
         </div>
       ` : ''}
 
-      <div style="margin-top:20px;font-size:0.9em;color:#a16207;">📅 ${new Date().toLocaleDateString('zh-HK')}</div>
+      <div style="margin-top:20px;font-size:0.9em;color:#a16207;">📅 ${_e(new Date().toLocaleDateString('zh-HK'))}</div>
       <div style="margin-top:8px;font-size:0.85em;color:#a16207;">朗讀評分 — 散文・詩詞</div>
     </div>
-    <button onclick="closeCertModal()" style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;font-size:1.15em;padding:16px;width:100%;border-radius:14px;margin-top:16px;">✨ 收埋佢！</button>
+    <button onclick="App.closeCertModal()" style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;font-size:1.15em;padding:16px;width:100%;border-radius:14px;margin-top:16px;">✨ 收埋佢！</button>
   `;
   document.getElementById('certModal').style.display = 'block';
   showConfetti(20);
@@ -1692,8 +1760,8 @@ function showMyProgress() {
     </div>
 
     <div style="display:flex;flex-direction:column;gap:12px;margin-top:20px;align-items:center;">
-      <button onclick="goTo('assessment');startAssessment();" style="background:linear-gradient(135deg,#22c55e,#16a34a);font-size:1.4em;padding:18px 32px;width:100%;max-width:340px;border-radius:20px;box-shadow:0 4px 12px rgba(34,197,94,0.4);">📖 開 始 朗 讀</button>
-      <button onclick="goTo('hub');" style="background:#666;font-size:1.05em;padding:14px 28px;width:100%;max-width:340px;border-radius:20px;">🏠 返 去</button>
+      <button onclick="App.goTo('assessment');App.startAssessment();" style="background:linear-gradient(135deg,#22c55e,#16a34a);font-size:1.4em;padding:18px 32px;width:100%;max-width:340px;border-radius:20px;box-shadow:0 4px 12px rgba(34,197,94,0.4);">📖 開 始 朗 讀</button>
+      <button onclick="App.goTo('hub');" style="background:#666;font-size:1.05em;padding:14px 28px;width:100%;max-width:340px;border-radius:20px;">🏠 返 去</button>
     </div>
   `;
   goTo('myProgress');
@@ -1743,9 +1811,14 @@ async function init() {
     }];
     _persistStudents();
   }
-  try {
-    state.progress = JSON.parse(localStorage.getItem('yueProgress') || '{}');
-  } catch(e) { state.progress = {}; }
+  // _migrateIfNeeded() both bumps the schema-version stamp AND normalizes
+  // any stale progress entries that pre-date the current shape.
+  _migrateIfNeeded();
+  // Defensive fallback: if migration was skipped (already at current version)
+  // or partially loaded, sanitize each student entry on read.
+  for (const sid of Object.keys(state.progress)) {
+    state.progress[sid] = _sanitizeProgress(state.progress[sid]);
+  }
 
   setTimeout(() => { try { _seedDemoProgress(); } catch(e) { console.warn('[seed]', e); } }, 100);
 
@@ -1782,7 +1855,7 @@ function _renderStudentGrid() {
   // 3-col grid on desktop, 2-col on phone (handled by CSS @media)
   grid.style.gridTemplateColumns = 'repeat(3, 1fr)';
   grid.innerHTML = state.students.map(s => `
-    <div class="student-avatar-card" onclick="selectStudentCard('${_e(s.id)}')" style="border-color:${_e(s.color || '#f59e0b')};">
+    <div class="student-avatar-card" onclick="App.selectStudentCard('${_e(s.id)}')" style="border-color:${_e(s.color || '#f59e0b')};">
       <span style="font-size:3.2em;display:block;line-height:1;">${_e(s.avatar || '🌟')}</span>
       <div style="font-size:1.2em;font-weight:bold;margin-top:4px;">${_e(s.name)}</div>
     </div>
@@ -1894,14 +1967,14 @@ function renderTeacherStudents() {
   document.getElementById('tchTabStudents').innerHTML = `
     <p style="color:rgba(255,255,255,0.7);font-size:1em;margin-bottom:16px;">管理學生頭像、顏色，同埋匯出 / 匯入全班資料。</p>
     <div id="studentList"></div>
-    <button onclick="addNewStudent()" style="margin-top:12px;width:100%;background:#7c3aed;font-size:1.05em;padding:12px;">＋ 新增學生</button>
-    <button onclick="reAddDemoStudent()" style="margin-top:8px;width:100%;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:44px;">🌟 加返示範同學</button>
+    <button onclick="App.addNewStudent()" style="margin-top:12px;width:100%;background:#7c3aed;font-size:1.05em;padding:12px;">＋ 新增學生</button>
+    <button onclick="App.reAddDemoStudent()" style="margin-top:8px;width:100%;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:44px;">🌟 加返示範同學</button>
     <div style="border-top:2px solid rgba(255,255,255,0.2);margin-top:24px;padding-top:20px;">
       <p style="color:rgba(255,255,255,0.7);font-size:0.95em;margin-bottom:12px;">📦 學生資料同進度可匯出 / 匯入，方便跨 iPad 同步。</p>
       <div style="display:flex;gap:8px;">
-        <button onclick="exportStudentsJson()" style="flex:1;background:#0ea5e9;font-size:1em;padding:12px;min-height:50px;">⬇️ 匯出</button>
+        <button onclick="App.exportStudentsJson()" style="flex:1;background:#0ea5e9;font-size:1em;padding:12px;min-height:50px;">⬇️ 匯出</button>
         <button onclick="document.getElementById('importStudentsFile').click()" style="flex:1;background:#f59e0b;font-size:1em;padding:12px;min-height:50px;">⬆️ 匯入</button>
-        <input type="file" id="importStudentsFile" accept=".json,application/json" style="display:none;" onchange="importStudentsJson(event)">
+        <input type="file" id="importStudentsFile" accept=".json,application/json" style="display:none;" onchange="App.importStudentsJson(event)">
       </div>
     </div>
   `;
@@ -1914,22 +1987,22 @@ function renderTeacherEdit() {
       <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;">
         <p style="font-weight:bold;color:#f59e0b;margin-bottom:10px;">📋 設定（開啟分類）</p>
         <div id="adminTypeList"></div>
-        <button onclick="saveAdminSettings()" style="margin-top:12px;width:100%;background:#22c55e;font-size:1.05em;padding:12px;">✅ 儲存</button>
+        <button onclick="App.saveAdminSettings()" style="margin-top:12px;width:100%;background:#22c55e;font-size:1.05em;padding:12px;">✅ 儲存</button>
       </div>
       <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;">
         <p style="font-weight:bold;color:#f59e0b;margin-bottom:10px;">✏️ 文章（CRUD）</p>
         <div id="passageList" style="max-height:500px;overflow:auto;"></div>
-        <button onclick="addNewPassage()" style="margin-top:8px;width:100%;background:#7c3aed;font-size:1em;padding:10px;">＋ 新增文章</button>
+        <button onclick="App.addNewPassage()" style="margin-top:8px;width:100%;background:#7c3aed;font-size:1em;padding:10px;">＋ 新增文章</button>
       </div>
     </div>
     <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📦 備份/分享</p>
       <div style="display:flex;gap:8px;margin-bottom:8px;">
-        <button onclick="exportPassagesJson()" style="flex:1;background:#0ea5e9;font-size:1em;padding:12px;min-height:50px;">⬇️ 匯出 JSON</button>
+        <button onclick="App.exportPassagesJson()" style="flex:1;background:#0ea5e9;font-size:1em;padding:12px;min-height:50px;">⬇️ 匯出 JSON</button>
         <button onclick="document.getElementById('importPassageFile').click()" style="flex:1;background:#f59e0b;font-size:1em;padding:12px;min-height:50px;">⬆️ 匯入 JSON</button>
-        <input type="file" id="importPassageFile" accept=".json,application/json" style="display:none;" onchange="importPassagesJson(event)">
+        <input type="file" id="importPassageFile" accept=".json,application/json" style="display:none;" onchange="App.importPassagesJson(event)">
       </div>
-      <button onclick="resetToDefaultPassages()" style="width:100%;background:#dc2626;font-size:0.95em;padding:10px;min-height:44px;">⚠️ 重設為 data/passages.json 預設值</button>
+      <button onclick="App.resetToDefaultPassages()" style="width:100%;background:#dc2626;font-size:0.95em;padding:10px;min-height:44px;">⚠️ 重設為 data/passages.json 預設值</button>
     </div>
   `;
   renderAdminTypeList();
@@ -1943,8 +2016,8 @@ function renderTeacherSettings() {
     <div id="whisperCacheStatus" style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-top:16px;display:none;">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📦 Whisper 模型狀態</p>
       <div id="whisperCacheContent" style="font-size:0.95em;color:rgba(255,255,255,0.8);"></div>
-      <button onclick="preloadWhisper()" style="margin-top:10px;width:100%;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:44px;">⬇️ 預先下載</button>
-      <button onclick="clearWhisperCache()" style="margin-top:8px;width:100%;background:#dc2626;font-size:0.95em;padding:10px;min-height:44px;">🗑 清除 cache</button>
+      <button onclick="App.preloadWhisper()" style="margin-top:10px;width:100%;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:44px;">⬇️ 預先下載</button>
+      <button onclick="App.clearWhisperCache()" style="margin-top:8px;width:100%;background:#dc2626;font-size:0.95em;padding:10px;min-height:44px;">🗑 清除 cache</button>
     </div>
     <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-top:16px;">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">⏱ 錄音時長</p>
@@ -1956,8 +2029,8 @@ function renderTeacherSettings() {
     </div>
     <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-top:16px;">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">🔧 進階</p>
-      <button onclick="clearAudioBaselines()" style="background:#dc2626;width:100%;font-size:0.95em;padding:10px;min-height:44px;">🗑 清除自訂引擎聲紋 baseline</button>
-      <button onclick="resetTeacherPassword()" style="background:#f59e0b;width:100%;font-size:0.95em;padding:10px;min-height:44px;margin-top:8px;">🔑 重設老師密碼</button>
+      <button onclick="App.clearAudioBaselines()" style="background:#dc2626;width:100%;font-size:0.95em;padding:10px;min-height:44px;">🗑 清除自訂引擎聲紋 baseline</button>
+      <button onclick="App.resetTeacherPassword()" style="background:#f59e0b;width:100%;font-size:0.95em;padding:10px;min-height:44px;margin-top:8px;">🔑 重設老師密碼</button>
     </div>
   `;
   renderAsrEngineList();
@@ -1990,7 +2063,7 @@ function editStudent(studentId) {
 function _renderEmojiPicker(selected) {
   const picker = document.getElementById('sm_emoji_picker');
   picker.innerHTML = _AVATAR_EMOJIS.map(em =>
-    `<button type="button" onclick="selectEmoji(this, '${em}')" data-emoji="${em}"
+    `<button type="button" onclick="App.selectEmoji(this, '${em}')" data-emoji="${em}"
       style="background:${em === selected ? '#f59e0b' : '#444'};font-size:1.8em;padding:6px;min-height:48px;min-width:48px;border-radius:8px;cursor:pointer;">${em}</button>`
   ).join('');
 }
@@ -2066,9 +2139,9 @@ function renderStudentList() {
           ${attempts} 次練習
         </div>
       </div>
-      <button onclick="editStudent('${_e(s.id)}')" style="background:#0ea5e9;min-height:40px;padding:8px 14px;font-size:0.95em;">✏️</button>
-      <button onclick="resetStudentProgress('${_e(s.id)}')" style="background:#f59e0b;min-height:40px;padding:8px 14px;font-size:0.95em;">🔄</button>
-      ${isDemo ? '<button disabled title="預設學生，重新整理頁面會自動恢復" style="background:#666;opacity:0.4;min-height:40px;padding:8px 14px;font-size:0.95em;cursor:not-allowed;">🗑</button>' : `<button onclick="deleteStudent('${_e(s.id)}')" style="background:#dc2626;min-height:40px;padding:8px 14px;font-size:0.95em;">🗑</button>`}
+      <button onclick="App.editStudent('${_e(s.id)}')" style="background:#0ea5e9;min-height:40px;padding:8px 14px;font-size:0.95em;">✏️</button>
+      <button onclick="App.resetStudentProgress('${_e(s.id)}')" style="background:#f59e0b;min-height:40px;padding:8px 14px;font-size:0.95em;">🔄</button>
+      ${isDemo ? '<button disabled title="預設學生，重新整理頁面會自動恢復" style="background:#666;opacity:0.4;min-height:40px;padding:8px 14px;font-size:0.95em;cursor:not-allowed;">🗑</button>' : `<button onclick="App.deleteStudent('${_e(s.id)}')" style="background:#dc2626;min-height:40px;padding:8px 14px;font-size:0.95em;">🗑</button>`}
     </div>`;
   }).join('');
 }
@@ -2256,7 +2329,7 @@ function renderAsrEngineList() {
     const isCurrent = state.asrEngine === engine.id;
     return `<label style="display:flex;align-items:flex-start;gap:12px;background:${isCurrent ? 'rgba(245,158,11,0.15)' : 'rgba(255,255,255,0.05)'};border:2px solid ${isCurrent ? '#f59e0b' : 'transparent'};border-radius:12px;padding:14px;margin:8px 0;cursor:${available ? 'pointer' : 'not-allowed'};opacity:${available ? '1' : '0.5'};">
       <input type="radio" name="asrEngine" value="${engine.id}" ${isCurrent ? 'checked' : ''} ${available ? '' : 'disabled'}
-        onchange="setAsrEngine('${engine.id}')"
+        onchange="App.setAsrEngine('${engine.id}')"
         style="width:24px;height:24px;margin-top:4px;accent-color:#f59e0b;">
       <div style="flex:1;">
         <div style="font-weight:bold;font-size:1.1em;color:${isCurrent ? '#f59e0b' : '#fff'};">${engine.name} ${isCurrent ? '✓' : ''}</div>
@@ -2447,7 +2520,7 @@ function renderDashboard() {
     container.innerHTML = `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:30px 20px;text-align:center;margin-top:20px;">
       <div style="font-size:3em;margin-bottom:12px;">👨‍🎓</div>
       <p style="font-size:1.2em;color:rgba(255,255,255,0.8);margin-bottom:16px;">尚未新增任何學生</p>
-      <button onclick="tchSwitchTab('students')" style="background:#7c3aed;font-size:1.1em;padding:12px 24px;border-radius:10px;">去 👨‍🎓 學生管理</button>
+      <button onclick="App.tchSwitchTab('students')" style="background:#7c3aed;font-size:1.1em;padding:12px 24px;border-radius:10px;">去 👨‍🎓 學生管理</button>
     </div>`;
     return;
   }
@@ -2711,22 +2784,22 @@ function renderDashboard() {
       </div>
       <div style="font-size:0.85em;color:rgba(255,255,255,0.6);margin-top:6px;">最後朗讀：${lastSession}</div>
       <div style="display:flex;gap:6px;margin-top:8px;">
-        <button onclick="showStudentDetail('${_e(s.id)}')" style="flex:1;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:42px;">📋 詳細</button>
-        <button onclick="exportStudentReport('${_e(s.id)}')" style="flex:1;background:#f59e0b;font-size:0.95em;padding:10px;min-height:42px;">📄 報告</button>
+        <button onclick="App.showStudentDetail('${_e(s.id)}')" style="flex:1;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:42px;">📋 詳細</button>
+        <button onclick="App.exportStudentReport('${_e(s.id)}')" style="flex:1;background:#f59e0b;font-size:0.95em;padding:10px;min-height:42px;">📄 報告</button>
       </div>
     </div>`;
   }).join('');
 
   // Top-level PDF export
   if (totalAttempts > 0) {
-    html += `<button onclick="exportClassReport()" style="margin-top:16px;width:100%;background:#0ea5e9;font-size:1.05em;padding:14px;">📄 匯出全班報告 (PDF)</button>`;
+    html += `<button onclick="App.exportClassReport()" style="margin-top:16px;width:100%;background:#0ea5e9;font-size:1.05em;padding:14px;">📄 匯出全班報告 (PDF)</button>`;
   }
 
   // Dev/demo helper — re-seed sample data (for teacher demo / preview)
   // Shown only if demo data has been seeded; lets teacher refresh sample data
   if (localStorage.getItem(_DEMO_SEED_KEY) === _DEMO_SEED_VERSION) {
     html += `<div style="text-align:center;margin-top:14px;padding-top:12px;border-top:1px dashed rgba(255,255,255,0.15);">
-      <button onclick="_reseedDemoProgress()" style="background:transparent;color:rgba(255,255,255,0.5);font-size:0.85em;padding:6px 12px;border:1px solid rgba(255,255,255,0.2);border-radius:6px;">🧪 重設示範資料</button>
+      <button onclick="App._reseedDemoProgress()" style="background:transparent;color:rgba(255,255,255,0.5);font-size:0.85em;padding:6px 12px;border:1px solid rgba(255,255,255,0.2);border-radius:6px;">🧪 重設示範資料</button>
     </div>`;
   }
 
@@ -2804,7 +2877,7 @@ function _renderSparkline(data, width, height) {
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
   const last = data[data.length - 1];
-  const lastColor = last >= 80 ? '#22c55e' : last >= 60 ? '#f59e0b' : '#ef4444';
+  const lastColor = _scoreColor(last);
   return `<svg viewBox="0 0 ${width} ${height}" style="width:100%;height:30px;">
     <polyline points="${points}" fill="none" stroke="${lastColor}" stroke-width="2"/>
     <circle cx="${((data.length-1)*stepX).toFixed(1)}" cy="${(height - ((last-min)/(max-min))*height).toFixed(1)}" r="3" fill="${lastColor}"/>
@@ -2826,7 +2899,7 @@ function _renderSessionDots(scores, n) {
     if (s === null) {
       return `<span title="未有資料" style="flex:0 0 ${dotW}%;max-width:${dotW}%;height:14px;border-radius:50%;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);margin:0 1px;"></span>`;
     }
-    const c = s.score >= 80 ? '#22c55e' : s.score >= 60 ? '#f59e0b' : '#ef4444';
+    const c = _scoreColor(s.score);
     const ptitle = s.passageTitle || '';
     const date = s.at ? new Date(s.at).toLocaleString('zh-HK', { month:'numeric', day:'numeric' }) : '';
     return `<span title="${ptitle ? ptitle + ' — ' : ''}${s.score}分（${date}）" style="flex:0 0 ${dotW}%;max-width:${dotW}%;height:14px;border-radius:50%;background:${c};box-shadow:0 0 0 1px rgba(0,0,0,0.3) inset;margin:0 1px;"></span>`;
@@ -3182,7 +3255,7 @@ function showStudentDetail(studentId) {
       const lastTry = data.lastTry ? new Date(data.lastTry).toLocaleString('zh-HK', { month:'numeric', day:'numeric' }) : '';
       const scoreTrend = (data.history || []).slice(-5).map(h => h.score);
       const miniBar = scoreTrend.map(sc => {
-        const c = sc >= 80 ? '#22c55e' : sc >= 60 ? '#f59e0b' : '#ef4444';
+        const c = _scoreColor(sc);
         return `<div style="display:inline-block;width:6px;height:${Math.max(4, sc/3)}px;background:${c};margin-right:2px;border-radius:2px;vertical-align:bottom;" title="${sc}分"></div>`;
       }).join('');
       html += `<div style="display:flex;align-items:center;gap:10px;padding:10px;background:rgba(255,255,255,0.05);border-radius:8px;margin:6px 0;">
@@ -3197,8 +3270,8 @@ function showStudentDetail(studentId) {
   }
   html += `</div>
     <div style="display:flex;gap:8px;margin-top:20px;">
-      <button onclick="exportStudentReport('${studentId}')" style="flex:1;background:#f59e0b;font-size:1em;padding:12px;">📄 匯出 PDF 報告</button>
-      <button onclick="renderDashboard();tchSwitchTab('dashboard');" style="flex:1;background:#666;font-size:1em;padding:12px;">返回 Dashboard</button>
+      <button onclick="App.exportStudentReport('${studentId}')" style="flex:1;background:#f59e0b;font-size:1em;padding:12px;">📄 匯出 PDF 報告</button>
+      <button onclick="App.renderDashboard();App.tchSwitchTab('dashboard');" style="flex:1;background:#666;font-size:1em;padding:12px;">返回 Dashboard</button>
     </div>
   </div>`;
   document.getElementById('dashboardContent').innerHTML = html;
@@ -3448,7 +3521,7 @@ function renderAdminTypeList() {
     return `<label style="display:flex;align-items:center;gap:12px;margin:10px 0;font-size:1.2em;cursor:pointer;">
       <input type="checkbox" id="type_toggle_${_e(t.id)}"
         ${t.enabled ? 'checked' : ''}
-        onchange="toggleAdminType('${_e(t.id)}', this.checked)"
+        onchange="App.toggleAdminType('${_e(t.id)}', this.checked)"
         style="width:26px;height:26px;accent-color:#f59e0b;">
       <span style="font-weight:bold;color:#f59e0b;min-width:60px;">${_e(t.icon || '')} ${_e(t.label)}</span>
       <span style="color:rgba(255,255,255,0.7);flex:1;">${_e(t.description || '')}</span>
@@ -3490,8 +3563,8 @@ function renderPassageList() {
         <div style="font-size:0.85em;color:rgba(255,255,255,0.6);">${type ? _e(type.icon + ' ' + type.label) : p.type} • ${_e(p.author || '')}</div>
         <div style="font-size:0.8em;color:rgba(255,255,255,0.4);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(p.text)}</div>
       </div>
-      <button onclick="editPassage('${_e(p.id)}')" style="background:#0ea5e9;min-height:36px;padding:6px 12px;font-size:0.9em;">✏️</button>
-      <button onclick="deletePassage('${_e(p.id)}')" style="background:#dc2626;min-height:36px;padding:6px 12px;font-size:0.9em;">🗑</button>
+      <button onclick="App.editPassage('${_e(p.id)}')" style="background:#0ea5e9;min-height:36px;padding:6px 12px;font-size:0.9em;">✏️</button>
+      <button onclick="App.deletePassage('${_e(p.id)}')" style="background:#dc2626;min-height:36px;padding:6px 12px;font-size:0.9em;">🗑</button>
     </div>`;
   }).join('');
 }
@@ -3638,6 +3711,43 @@ function resetToDefaultPassages() {
   });
 }
 
+// ================== PUBLIC API SURFACE ==================
+// Single file-scope namespace for inline `onclick="App.fn()"` handlers.
+// Listing every top-level function explicitly so the App boundary is auditable
+// (avoids accidental global leakage of internal helpers that start with `_`).
+window.App = {
+  // State & navigation
+  init, goTo, speak, showToast, showConfirm,
+  // Student login / CRUD
+  selectStudentCard, cancelCardLogin, enterTeacherMode, exitTeacherMode,
+  addNewStudent, editStudent, deleteStudent, importStudentsJson, exportStudentsJson,
+  reAddDemoStudent, resetStudentProgress, selectEmoji, saveAdminSettings,
+  // Assessment flow
+  showPassageSelector, startAssessment, startPassageReading, startRecording, retryCurrentPassage,
+  scorePassage, _stopRecordingFromUI, _resultListen, _resultReplay,
+  _startWordRepractice, _repracticeListen, _repracticeRecord,
+  // Cert + result
+  showCertModal, closeCertModal, showConfetti,
+  // My progress
+  showMyProgress, _reseedDemoProgress,
+  // Teacher tabs
+  tchSwitchTab, renderDashboard, renderStudentList, showStudentDetail,
+  // Passage CRUD
+  filterPassages, addNewPassage, editPassage, deletePassage,
+  openPassageModal, closePassageModal, savePassageFromModal,
+  exportPassagesJson, importPassagesJson, resetToDefaultPassages,
+  // Type toggle
+  toggleAdminType, saveTypeToggles,
+  // ASR engine
+  setAsrEngine, renderAsrEngineList, getAsrStats, _getAsrStats,
+  // Whisper cache
+  preloadWhisper, clearWhisperCache, clearAudioBaselines, resetTeacherPassword,
+  // Reports
+  exportStudentReport, exportClassReport,
+  // Helpers
+  _e, _tierFromScore, _scoreColor, _sanitizeProgress, _migrateIfNeeded
+};
+// Kick off: start the SPA after the API surface is mounted.
 init();
 </script>
 </body>
