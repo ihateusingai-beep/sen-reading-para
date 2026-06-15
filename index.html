@@ -789,6 +789,26 @@ let _currentAudioBlob = null;
 // "Stop recording" trigger from the in-recording UI button.
 // Works for both Web Speech (recognition.stop()) and MediaRecorder (recorder.stop()).
 function _stopRecordingFromUI() {
+  // Instant visual feedback so the user doesn't think the page is frozen
+  // (transcription + scoring takes 200ms-2s depending on engine).
+  const status = document.getElementById('recordingStatus');
+  if (status) {
+    status.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0;">
+        <div style="font-size:1.3em;color:#0ea5e9;font-weight:bold;">⏳ 處理中…</div>
+        <div style="font-size:0.95em;color:rgba(255,255,255,0.6);">分析錄音 + 評分中</div>
+      </div>`;
+  }
+  // Disable the 完成 button so a double-tap doesn't fire onstop twice
+  // (the 完成 button is the only button inside #recordingStatus that contains '⏹')
+  if (status) {
+    status.querySelectorAll('button').forEach(b => {
+      if ((b.textContent || '').includes('⏹ 完成')) {
+        b.disabled = true;
+        b.textContent = '⏳ 處理中…';
+      }
+    });
+  }
   try {
     if (typeof recognition !== 'undefined' && recognition) {
       try { recognition.stop(); } catch(e) {}
@@ -854,7 +874,13 @@ function startRecording() {
       status.innerHTML = msg + '，請再試';
     };
     recognition.onend = () => {
-      if (status.innerHTML.includes('錄音中')) status.innerHTML = '錄音結束';
+      // FALLBACK only: onresult fires BEFORE onend if there was a result.
+      // If onresult never fired (no speech detected, aborted, etc.), show a
+      // helpful prompt here so the user isn't left looking at "⏳ 處理中…".
+      // Don't overwrite onresult's output (which already set "你讀咗：...").
+      if (status.innerHTML.includes('處理中') || status.innerHTML.includes('錄音中')) {
+        status.innerHTML = `錄音結束 — 冇收到語音。撳「🎤 讀一次」重試，或撳「📖 其他文章 →」揀別篇。`;
+      }
     };
   } else {
     // Whisper / Custom: use MediaRecorder to capture audio blob
