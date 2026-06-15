@@ -1151,26 +1151,31 @@ function _coverageScore(ops, targetLen) {
   return Math.round((hit / targetLen) * 100);
 }
 
-// Fluency: speech rate (chars/sec) within an ideal band + low long-pause penalty.
-// pace = audio_duration_sec; chars = transcript length; longPauses = count of >1s silent gaps
-function _fluencyScore(charCount, audioDuration, longPauses) {
-  if (!audioDuration || audioDuration < 0.5) return 0;  // no audio = no score
-  const cps = charCount / audioDuration;  // chars per second
-  // Ideal band: 1.5 - 4 chars/sec for SEN reading. Outside penalised.
+// Fluency: speech rate (chars/sec) within a TYPE-AWARE ideal band.
+//   prose:  [1.5, 4] cps — natural conversational reading
+//   poetry: [0.8, 2.5] cps — classical Chinese cadence (靜夜思 ≈ 1 cps)
+// Pause penalty was REMOVED (2026-06-15 review): _expressionScore already
+// accounts for pause cadence via the pauseRatio. Keeping the penalty here
+// double-counted pauses (5-15 false-penalty points for strong SEN readers
+// with deliberate cadence).
+function _fluencyScore(charCount, audioDuration, longPauses, passageType) {
+  if (!audioDuration || audioDuration < 0.5) return null;  // null = "no data"
+  const cps = charCount / audioDuration;
+  // Type-aware band
+  const lowCps  = (passageType === 'poetry') ? 0.8 : 1.5;
+  const highCps = (passageType === 'poetry') ? 2.5 : 4.0;
   let paceScore;
-  if (cps >= 1.5 && cps <= 4) paceScore = 100;
-  else if (cps < 1.5) paceScore = Math.max(0, 100 - (1.5 - cps) * 60);
-  else paceScore = Math.max(0, 100 - (cps - 4) * 15);
-  // Penalise long pauses: each >1s silent gap costs 5 pts, cap at -30
-  const pausePenalty = Math.min(30, (longPauses || 0) * 5);
-  return Math.round(Math.max(0, Math.min(100, paceScore - pausePenalty)));
+  if (cps >= lowCps && cps <= highCps) paceScore = 100;
+  else if (cps < lowCps) paceScore = Math.max(0, 100 - (lowCps - cps) * (passageType === 'poetry' ? 80 : 60));
+  else paceScore = Math.max(0, 100 - (cps - highCps) * (passageType === 'poetry' ? 30 : 15));
+  return Math.round(Math.max(0, Math.min(100, paceScore)));
 }
 
 // Expression: from pause distribution only (real prosody needs more audio features).
 // Even cadence of short pauses (~punctuation) scores higher than clustered or absent pauses.
+// Returns null when no audio captured (mirrored from _fluencyScore).
 function _expressionScore(longPauses, charCount, audioDuration) {
-  if (!audioDuration || charCount === 0) return 50;
-  const cps = charCount / audioDuration;
+  if (!audioDuration || charCount === 0) return null;
   // Ideal: ~1 pause per 8 chars (matches natural Chinese punctuation cadence)
   const idealPauses = charCount / 8;
   const pauseRatio = (longPauses || 0) / idealPauses;
@@ -1228,7 +1233,7 @@ async function _analyzeAudioFeatures(blob, charCount) {
 
 // 4-dimension reading scoring. Used by scorePassage() and single-word repractice.
 //  Returns {total, sub:{accuracy,coverage,fluency,expression}, alignment, tier, feedback, errorWords, fluencyMeta}
-function _computePassageScore(target, transcript, audioFeatures) {
+function _computePassageScore(target, transcript, audioFeatures, passageType) {
   const tClean = _normText(target);
   const uClean = _normText(transcript);
   const targetTokens = _tokenize(tClean);
@@ -1238,11 +1243,12 @@ function _computePassageScore(target, transcript, audioFeatures) {
   const accuracy = _accuracyScore(align.ops, targetTokens.length, userTokens.length);
   const coverage = _coverageScore(align.ops, targetTokens.length);
 
-  // Fluency + expression need audio; fall back to neutral if no audio
+  // Fluency + expression need audio; fall back to neutral if no audio.
+  // passageType biases the pace band (poetry: [0.8, 2.5] cps; prose: [1.5, 4]).
   const charCount = userTokens.length;
   const dur = audioFeatures && audioFeatures.valid ? audioFeatures.duration : 0;
   const longPauses = audioFeatures && audioFeatures.valid ? audioFeatures.longPauses : 0;
-  const fluency = _fluencyScore(charCount, dur, longPauses);
+  const fluency = _fluencyScore(charCount, dur, longPauses, passageType);
   const expression = _expressionScore(longPauses, charCount, dur);
 
   // Weighted total: accuracy 35% / coverage 30% / fluency 20% / expression 15%
@@ -1250,9 +1256,17 @@ function _computePassageScore(target, transcript, audioFeatures) {
   let total, sub;
   if (dur > 0) {
     sub = { accuracy, coverage, fluency, expression };
-    total = Math.round(accuracy * 0.35 + coverage * 0.30 + fluency * 0.20 + expression * 0.15);
+    // fluency/expression may be null if their input was zero — fall through
+    // to the no-audio weights so the total stays well-defined.
+    const f = (typeof fluency === 'number') ? fluency : 0;
+    const e = (typeof expression === 'number') ? expression : 0;
+    total = Math.round(accuracy * 0.35 + coverage * 0.30 + f * 0.20 + e * 0.15);
   } else {
-    sub = { accuracy, coverage, fluency: 0, expression: 0 };
+    // No audio captured — fluency/expression are unmeasurable. Use null
+    // so the UI can render "—" instead of a misleading red 0. Weight
+    // rebalances to 50/50 accuracy+coverage (which are the only dimensions
+    // that don't require audio).
+    sub = { accuracy, coverage, fluency: null, expression: null };
     total = Math.round(accuracy * 0.50 + coverage * 0.50);
   }
 
@@ -1314,7 +1328,8 @@ function scorePassage(transcript, opts) {
     document.getElementById('resultScore').style.color = tier.color;
     document.getElementById('resultTier').textContent = `${tier.emoji} ${tier.label}獎`;
     document.getElementById('resultFeedback').textContent = reason || '請再試一次。';
-    const emptySub = { accuracy: 0, coverage: 0, fluency: 0, expression: 0 };
+    // Empty sub-scores: accuracy/coverage=0, fluency/expression=null (no data)
+    const emptySub = { accuracy: 0, coverage: 0, fluency: null, expression: null };
     try { _renderSubScores(emptySub); } catch(e) { console.warn(e); }
     try { _renderDiffHighlight(target, { ops: [] }, transcript || ''); } catch(e) { console.warn(e); }
     try { _renderFluencyPanel({ charCount: 0, duration: 0, longPauses: 0, cps: 0 }, { valid: false }); } catch(e) { console.warn(e); }
@@ -1335,13 +1350,13 @@ function scorePassage(transcript, opts) {
       if (isCustom) {
         // Custom engine: respect its score, but still produce sub-scores for diagnostics
         const custom = opts.customScore;
-        scoreResult = _computePassageScore(target, transcript, features);
+        scoreResult = _computePassageScore(target, transcript, features, p.type);
         // Override total with custom score, but keep sub-scores as informational
         scoreResult.total = custom.score;
         feedback = custom.score >= 85 ? '做得好！' : custom.score >= 60 ? '唔錯！繼續努力～' : '再嚟多次！';
         scoringMethod = 'custom-audio';
       } else {
-        scoreResult = _computePassageScore(target, transcript, features);
+        scoreResult = _computePassageScore(target, transcript, features, p.type);
         const t = scoreResult.total;
         feedback = t >= 85 ? '做得好！朗讀好流暢！' : t >= 60 ? '唔錯！繼續努力～' : '再試一次，你可以嘅！';
         scoringMethod = 'passage-4dim';
@@ -1397,7 +1412,22 @@ function _renderSubScores(sub) {
     { key: 'expression', label: '朗讀感情', icon: '🎵', color: '#7c3aed' }
   ];
   el.innerHTML = items.map(it => {
-    const v = sub[it.key] || 0;
+    // null = "no data" (no audio captured). Render "—" with grey styling
+    // instead of a misleading red 0 that students/parents would read as
+    // a failure. Only audio-derived dims (fluency, expression) can be null;
+    // accuracy/coverage are text-only and always numeric.
+    const v = sub[it.key];
+    if (v === null || v === undefined || typeof v !== 'number') {
+      return `<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:10px 8px;text-align:left;">
+        <div style="font-size:0.85em;color:#6b7280;display:flex;justify-content:space-between;align-items:center;">
+          <span>${it.icon} ${it.label}</span>
+          <b style="color:#9ca3af;">—</b>
+        </div>
+        <div style="background:#f3f4f6;height:6px;border-radius:3px;margin-top:4px;position:relative;">
+          <div style="position:absolute;top:-16px;right:0;font-size:0.7em;color:#9ca3af;">無數據</div>
+        </div>
+      </div>`;
+    }
     const pct = Math.max(0, Math.min(100, v));
     const barColor = _scoreColor(pct);
     return `<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:10px 8px;text-align:left;">
@@ -2191,7 +2221,7 @@ function renderTeacherSettings() {
     <div id="whisperCacheStatus" style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-top:16px;display:none;">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📦 Whisper 模型狀態</p>
       <div id="whisperCacheContent" style="font-size:0.95em;color:rgba(255,255,255,0.8);"></div>
-      <button onclick="App.preloadWhisper()" style="margin-top:10px;width:100%;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:44px;">⬇️ 預先下載</button>
+      <button id="whisperPreloadBtn" onclick="App.preloadWhisper()" style="margin-top:10px;width:100%;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:44px;">⬇️ 預先下載</button>
       <button onclick="App.clearWhisperCache()" style="margin-top:8px;width:100%;background:#dc2626;font-size:0.95em;padding:10px;min-height:44px;">🗑 清除 cache</button>
     </div>
     <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-top:16px;">
@@ -2556,16 +2586,52 @@ function clearAudioBaselines() {
 // ================== WHISPER CACHE MANAGEMENT ==================
 async function preloadWhisper() {
   const statusEl = document.getElementById('whisperCacheContent');
+  const preloadBtn = document.getElementById('whisperPreloadBtn');
   if (statusEl) statusEl.innerHTML = '⏳ 開始下載…';
+  // Provide a cancel affordance: swap the preload button to a stop button
+  // while the download is in flight. (lib.pipeline() doesn't natively
+  // support AbortController, so we race a manual cancel promise against
+  // the pipeline promise. Aborting before pipeline is built will resolve
+  // the race to "cancelled"; aborting mid-download can leave the partial
+  // pipeline in memory but the next preload call will re-use the
+  // Cache Storage layer.)
+  let cancelled = false;
+  let cancelBtn = null;
+  if (preloadBtn) {
+    const originalText = preloadBtn.textContent;
+    preloadBtn.textContent = '⏹ 取消下載';
+    preloadBtn.style.background = '#dc2626';
+    cancelBtn = preloadBtn;
+    cancelBtn.onclick = (e) => { e.preventDefault(); cancelled = true; };
+  }
+  const cancelPromise = new Promise((resolve) => {
+    if (cancelBtn) cancelBtn.addEventListener('click', () => resolve('cancelled'), { once: true });
+    // Auto-fallback: if no click within 5 minutes, give up.
+    setTimeout(() => resolve('timeout'), 5 * 60 * 1000);
+  });
   try {
-    await _ASR_ENGINES.whisper._ensurePipeline((p) => {
-      if (statusEl) statusEl.innerHTML = p.message || '⏳ 處理中…';
-    });
-    if (statusEl) statusEl.innerHTML = '✅ 模型已下載並 cache。';
-    showToast('✅ Whisper 已預載！');
+    await Promise.race([
+      _ASR_ENGINES.whisper._ensurePipeline((p) => {
+        if (statusEl) statusEl.innerHTML = p.message || '⏳ 處理中…';
+      }),
+      cancelPromise.then(r => { if (r === 'cancelled') throw new Error('USER_CANCELLED'); })
+    ]);
+    if (cancelled) {
+      if (statusEl) statusEl.innerHTML = '⏸ 下載已取消。';
+      showToast('⏸ Whisper 下載已取消');
+    } else {
+      if (statusEl) statusEl.innerHTML = '✅ 模型已下載並 cache。';
+      showToast('✅ Whisper 已預載！');
+    }
   } catch (e) {
-    if (statusEl) statusEl.innerHTML = '❌ 下載失敗：' + e.message;
+    if (statusEl) statusEl.innerHTML = '❌ 下載失敗：' + (e.message || '').replace('USER_CANCELLED', '已取消');
     showToast('❌ 預載失敗');
+  } finally {
+    if (preloadBtn) {
+      preloadBtn.textContent = '⬇️ 預先下載';
+      preloadBtn.style.background = '#0ea5e9';
+      preloadBtn.onclick = () => App.preloadWhisper();
+    }
   }
 }
 
