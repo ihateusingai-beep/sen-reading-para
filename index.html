@@ -189,13 +189,56 @@ button:active { transform:scale(0.95); }
     <h2>評分結果</h2>
     <div id="resultWord" style="font-size:2.2em;margin:20px 0;color:#7c3aed;"></div>
     <div class="score" id="resultScore"></div>
-    <div id="resultFeedback" style="font-size:1.4em;margin:20px 0;"></div>
-    <div id="resultAI" style="background:#f3e8ff;padding:16px;border-radius:16px;margin:20px 0;"></div>
+    <div id="resultTier" style="font-size:1.1em;margin:6px 0;color:rgba(0,0,0,0.6);"></div>
+    <div id="resultFeedback" style="font-size:1.3em;margin:14px 0;font-weight:bold;"></div>
+
+    <!-- 4 sub-scores grid -->
+    <div id="resultSubScores" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:14px 0;"></div>
+
+    <!-- 逐字 diff highlight -->
+    <div style="background:#f3e8ff;padding:14px;border-radius:14px;margin:14px 0;text-align:left;">
+      <div style="font-weight:bold;margin-bottom:6px;color:#7c3aed;font-size:0.95em;">📝 逐字對齊 <span style="font-weight:normal;font-size:0.85em;color:rgba(0,0,0,0.6);">（綠=啱 紅=錯 灰=漏咗 黃=多咗）</span></div>
+      <div id="resultDiff" style="line-height:1.9;font-size:1.15em;font-family:inherit;"></div>
+    </div>
+
+    <!-- 流暢度指標 -->
+    <div id="resultFluency" style="background:#fef3c7;padding:12px;border-radius:12px;margin:14px 0;text-align:left;font-size:0.95em;"></div>
+
+    <!-- TTS / Replay buttons -->
+    <div style="display:flex;gap:8px;margin-top:14px;">
+      <button id="resultListenBtn" onclick="_resultListen()" style="flex:1;background:#0ea5e9;font-size:1.05em;padding:12px;">🔊 聽示範</button>
+      <button id="resultReplayBtn" onclick="_resultReplay()" style="flex:1;background:#7c3aed;font-size:1.05em;padding:12px;">▶ 聽自己</button>
+    </div>
+
+    <!-- Word retry section: hidden until scoring produces a wrong-word list -->
+    <div id="resultWordRetry" style="display:none;background:#fee2e2;padding:12px;border-radius:12px;margin:14px 0;text-align:left;">
+      <div style="font-weight:bold;margin-bottom:8px;color:#dc2626;font-size:0.95em;">🔁 錯字重讀（撳字重試）</div>
+      <div id="resultWordRetryList" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+    </div>
+
+    <div id="resultAI" style="background:#f3e8ff;padding:14px;border-radius:14px;margin:14px 0;text-align:left;font-size:0.9em;"></div>
+
     <div style="display:flex;gap:8px;margin-top:20px;" id="resultActions">
       <button onclick="retryCurrentPassage()" style="flex:1;background:#f59e0b;font-size:1.1em;padding:14px;">🔄 再讀一次</button>
       <button onclick="showPassageSelector()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">📖 其他文章 →</button>
     </div>
     <button onclick="showCertModal()" style="margin-top:12px;background:#7c3aed;width:100%;font-size:1.1em;padding:14px;">🏆 睇我嘅證書</button>
+  </div>
+</div>
+
+<!-- WORD REPRACTICE: shows when student taps a single wrong word -->
+<div id="wordRepractice" class="page">
+  <div class="hub-card" style="text-align:center;max-width:560px;">
+    <h2>🎯 單字重讀</h2>
+    <div id="wordRepracticeWord" style="font-size:3em;color:#dc2626;margin:20px 0;font-weight:bold;"></div>
+    <div id="wordRepracticeContext" style="color:rgba(0,0,0,0.7);margin-bottom:16px;font-size:1em;"></div>
+    <div id="wordRepracticeStatus" style="min-height:80px;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.05);border-radius:14px;padding:14px;margin:14px 0;"></div>
+    <div style="display:flex;gap:8px;">
+      <button id="wordRepracticeListen" onclick="_repracticeListen()" style="flex:1;background:#0ea5e9;font-size:1em;padding:12px;">🔊 聽示範</button>
+      <button id="wordRepracticeRec" onclick="_repracticeRecord()" style="flex:1;background:#ef4444;font-size:1em;padding:12px;">🎤 讀一次</button>
+    </div>
+    <div id="wordRepracticeResult" style="margin-top:14px;"></div>
+    <button onclick="goTo('result')" style="margin-top:14px;background:#444;width:100%;font-size:1em;padding:12px;">↩ 返去睇結果</button>
   </div>
 </div>
 
@@ -834,69 +877,569 @@ function _updateAudioBaseline(word, features) {
   } catch(e) {}
 }
 
+// ================== PASSAGE-LEVEL SCORING ==================
+// Strip punctuation/whitespace for text comparison.
+function _normText(s) {
+  return (s || '').replace(/[，。！？、；：""''「」（）《》\.\,\!\?\;\:\s\n\r\(\)\[\]"'`]/g, '');
+}
+
+// Word-segment a Chinese string into individual characters (loose tokenization).
+// Treats each Chinese char as a "word"; Latin tokens kept as-is.
+function _tokenize(s) {
+  const out = [];
+  const re = /[\u4e00-\u9fff]|[A-Za-z0-9]+/g;
+  let m;
+  while ((m = re.exec(s)) !== null) out.push(m[0]);
+  return out;
+}
+
+// Build a Levenshtein DP table and return alignment as two parallel arrays
+// of {op: 'match'|'sub'|'del'|'ins', a, b} for traceback.
+// Used to produce char-level diff highlight + accuracy sub-score.
+function _alignTokens(a, b) {
+  const n = a.length, m = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Int32Array(n + 1));
+  for (let i = 0; i <= n; i++) dp[0][i] = i;
+  for (let j = 0; j <= m; j++) dp[j][0] = j;
+  for (let j = 1; j <= m; j++) {
+    for (let i = 1; i <= n; i++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[j][i] = dp[j - 1][i - 1];
+      } else {
+        dp[j][i] = 1 + Math.min(dp[j - 1][i - 1], dp[j][i - 1], dp[j - 1][i]);
+      }
+    }
+  }
+  // Traceback. Convention: a = target, b = user.
+  //   del  = target has a token the user didn't say (skip in target)   → dp[j][i-1] predecessor
+  //   ins  = user said a token the target doesn't have (extra in user) → dp[j-1][i] predecessor
+  //   sub  = token differs                                            → dp[j-1][i-1] predecessor
+  // Prefer del over sub on ties so the "single word retry" list shows what was *missed*,
+  // not what was *substituted* (substitution often = dialect/cantonese variation that
+  // doesn't need remediation).
+  const ops = [];
+  let i = n, j = m;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && a[i - 1] === b[j - 1] && dp[j][i] === dp[j - 1][i - 1]) {
+      ops.push({ op: 'match', a: a[i - 1], b: b[j - 1] });
+      i--; j--;
+    } else if (i > 0 && j > 0 &&
+               (dp[j][i] === dp[j][i - 1] + 1) &&
+               (dp[j][i] < dp[j - 1][i - 1] + 1)) {
+      // del: target skipped, user didn't say this token.
+      ops.push({ op: 'del', a: a[i - 1], b: null });
+      i--;
+    } else if (i > 0 && j > 0 && dp[j][i] === dp[j - 1][i - 1] + 1) {
+      ops.push({ op: 'sub', a: a[i - 1], b: b[j - 1] });
+      i--; j--;
+    } else if (i > 0 && dp[j][i] === dp[j][i - 1] + 1) {
+      // del tied with sub: prefer del for pedagogical reasons
+      ops.push({ op: 'del', a: a[i - 1], b: null });
+      i--;
+    } else if (j > 0) {
+      ops.push({ op: 'ins', a: null, b: b[j - 1] });
+      j--;
+    } else {
+      break;
+    }
+  }
+  ops.reverse();
+  return { ops, dp, distance: dp[m][n] };
+}
+
+// Accuracy: alignment-based. match / max(target, user) * 100, with sub treated as half-credit.
+function _accuracyScore(ops, targetLen, userLen) {
+  if (targetLen === 0) return userLen === 0 ? 100 : 0;
+  let correct = 0, near = 0;
+  for (const o of ops) {
+    if (o.op === 'match') correct++;
+    else if (o.op === 'sub') near++;
+  }
+  const denom = Math.max(targetLen, userLen, 1);
+  return Math.round(((correct + near * 0.5) / denom) * 100);
+}
+
+// Coverage: of target tokens, how many were matched (or substituted, since
+// student at least attempted a token at that position).
+function _coverageScore(ops, targetLen) {
+  if (targetLen === 0) return 100;
+  let hit = 0;
+  for (const o of ops) {
+    if (o.op === 'match' || o.op === 'sub') hit++;
+  }
+  return Math.round((hit / targetLen) * 100);
+}
+
+// Fluency: speech rate (chars/sec) within an ideal band + low long-pause penalty.
+// pace = audio_duration_sec; chars = transcript length; longPauses = count of >1s silent gaps
+function _fluencyScore(charCount, audioDuration, longPauses) {
+  if (!audioDuration || audioDuration < 0.5) return 0;  // no audio = no score
+  const cps = charCount / audioDuration;  // chars per second
+  // Ideal band: 1.5 - 4 chars/sec for SEN reading. Outside penalised.
+  let paceScore;
+  if (cps >= 1.5 && cps <= 4) paceScore = 100;
+  else if (cps < 1.5) paceScore = Math.max(0, 100 - (1.5 - cps) * 60);
+  else paceScore = Math.max(0, 100 - (cps - 4) * 15);
+  // Penalise long pauses: each >1s silent gap costs 5 pts, cap at -30
+  const pausePenalty = Math.min(30, (longPauses || 0) * 5);
+  return Math.round(Math.max(0, Math.min(100, paceScore - pausePenalty)));
+}
+
+// Expression: from pause distribution only (real prosody needs more audio features).
+// Even cadence of short pauses (~punctuation) scores higher than clustered or absent pauses.
+function _expressionScore(longPauses, charCount, audioDuration) {
+  if (!audioDuration || charCount === 0) return 50;
+  const cps = charCount / audioDuration;
+  // Ideal: ~1 pause per 8 chars (matches natural Chinese punctuation cadence)
+  const idealPauses = charCount / 8;
+  const pauseRatio = (longPauses || 0) / idealPauses;
+  let score;
+  if (pauseRatio >= 0.7 && pauseRatio <= 1.3) score = 90;
+  else if (pauseRatio < 0.7) score = 60 + pauseRatio * 30;  // too few pauses
+  else score = 90 - (pauseRatio - 1.3) * 20;                // too many
+  return Math.round(Math.max(0, Math.min(100, score)));
+}
+
+// Decode an audio blob and compute fluency-relevant features:
+// returns {duration, charCount, longPauses, rms} (rms for diagnostics).
+async function _analyzeAudioFeatures(blob, charCount) {
+  const features = { duration: 0, longPauses: 0, rms: 0, valid: false };
+  if (!blob || !blob.size) return features;
+  try {
+    const buf = await blob.arrayBuffer();
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return features;
+    const ctx = new AudioCtx();
+    const decoded = await ctx.decodeAudioData(buf.slice(0));
+    ctx.close();
+    features.duration = decoded.duration;
+    // Scan channel for silent gaps > 1s
+    const ch = decoded.getChannelData(0);
+    const sampleRate = decoded.sampleRate;
+    const winSize = Math.floor(sampleRate * 0.05);  // 50ms windows
+    const threshold = 0.01;
+    const minPauseSamples = sampleRate * 1.0;  // 1s
+    let silentRun = 0, totalSilent = 0;
+    for (let i = 0; i < ch.length; i += winSize) {
+      let sumSq = 0, n = 0;
+      for (let k = 0; k < winSize && i + k < ch.length; k++) { sumSq += ch[i + k] * ch[i + k]; n++; }
+      const rms = Math.sqrt(sumSq / n);
+      if (rms < threshold) {
+        silentRun += n;
+      } else {
+        if (silentRun >= minPauseSamples) totalSilent++;
+        silentRun = 0;
+      }
+    }
+    if (silentRun >= minPauseSamples) totalSilent++;
+    features.longPauses = totalSilent;
+    // overall RMS for diagnostics
+    let ss = 0;
+    for (let i = 0; i < ch.length; i++) ss += ch[i] * ch[i];
+    features.rms = Math.sqrt(ss / ch.length);
+    features.valid = true;
+    return features;
+  } catch (e) {
+    console.warn('audio analysis failed', e);
+    return features;
+  }
+}
+
+// 4-dimension reading scoring. Used by scorePassage() and single-word repractice.
+//  Returns {total, sub:{accuracy,coverage,fluency,expression}, alignment, tier, feedback, errorWords, fluencyMeta}
+function _computePassageScore(target, transcript, audioFeatures) {
+  const tClean = _normText(target);
+  const uClean = _normText(transcript);
+  const targetTokens = _tokenize(tClean);
+  const userTokens = _tokenize(uClean);
+  const align = _alignTokens(targetTokens, userTokens);
+
+  const accuracy = _accuracyScore(align.ops, targetTokens.length, userTokens.length);
+  const coverage = _coverageScore(align.ops, targetTokens.length);
+
+  // Fluency + expression need audio; fall back to neutral if no audio
+  const charCount = userTokens.length;
+  const dur = audioFeatures && audioFeatures.valid ? audioFeatures.duration : 0;
+  const longPauses = audioFeatures && audioFeatures.valid ? audioFeatures.longPauses : 0;
+  const fluency = _fluencyScore(charCount, dur, longPauses);
+  const expression = _expressionScore(longPauses, charCount, dur);
+
+  // Weighted total: accuracy 35% / coverage 30% / fluency 20% / expression 15%
+  // If no audio features, redistribute weight: accuracy 50% / coverage 50%
+  let total, sub;
+  if (dur > 0) {
+    sub = { accuracy, coverage, fluency, expression };
+    total = Math.round(accuracy * 0.35 + coverage * 0.30 + fluency * 0.20 + expression * 0.15);
+  } else {
+    sub = { accuracy, coverage, fluency: 0, expression: 0 };
+    total = Math.round(accuracy * 0.50 + coverage * 0.50);
+  }
+
+  // Build word-level error list (sub + del targets) for the "single word retry" buttons
+  const errorWords = [];
+  for (const o of align.ops) {
+    if (o.op === 'sub') errorWords.push({ kind: 'sub', expected: o.b, actual: o.a });
+    else if (o.op === 'del') errorWords.push({ kind: 'miss', expected: o.a, actual: null });
+  }
+  // wrongChars = set of target chars that the student got wrong or missed.
+  // Used to render the "single word retry" buttons.
+  const wrongChars = [...new Set(errorWords.map(w => w.expected))];
+
+  return {
+    total, sub, align, errorWords, wrongChars,
+    fluencyMeta: { charCount, duration: dur, longPauses, cps: dur ? +(charCount / dur).toFixed(2) : 0 }
+  };
+}
+
 function scorePassage(transcript, opts) {
   opts = opts || {};
   const p = state.currentPassage;
   const target = p.text || '';
-  let aiScore, feedback, scoringMethod;
+  const isCustom = (opts.engine === 'custom' && opts.customScore);
 
-  if (opts.engine === 'custom' && opts.customScore) {
-    aiScore = opts.customScore.score;
-    const dur = opts.customScore.duration ? opts.customScore.duration.toFixed(1) : '?';
-    feedback = aiScore >= 85 ? '做得好！' : aiScore >= 60 ? '唔錯！繼續努力～' : '再嚟多次！';
-    scoringMethod = 'custom-audio';
+  // Async: get audio features (may be null for manual text input)
+  _analyzeAudioFeatures(opts.audioBlob, (transcript || '').length).then(features => {
+    let scoreResult, feedback, scoringMethod, audioNote = '';
+
+    if (isCustom) {
+      // Custom engine: respect its score, but still produce sub-scores for diagnostics
+      const custom = opts.customScore;
+      scoreResult = _computePassageScore(target, transcript, features);
+      // Override total with custom score, but keep sub-scores as informational
+      scoreResult.total = custom.score;
+      feedback = custom.score >= 85 ? '做得好！' : custom.score >= 60 ? '唔錯！繼續努力～' : '再嚟多次！';
+      scoringMethod = 'custom-audio';
+    } else {
+      scoreResult = _computePassageScore(target, transcript, features);
+      const t = scoreResult.total;
+      feedback = t >= 85 ? '做得好！朗讀好流暢！' : t >= 60 ? '唔錯！繼續努力～' : '再試一次，你可以嘅！';
+      scoringMethod = 'passage-4dim';
+    }
+
+    if (!features.valid && !isCustom) {
+      audioNote = '（冇錄音數據，流暢度同感情用預設值）';
+    }
+
+    _recordPassageAttempt(p.id, p.title, scoreResult.total, transcript);
+
+    goTo('result');
+    const tier = scoreResult.total >= 90 ? { label: '金', color: '#ffd700', emoji: '🥇' }
+                : scoreResult.total >= 75 ? { label: '銀', color: '#c0c0c0', emoji: '🥈' }
+                : scoreResult.total >= 60 ? { label: '銅', color: '#cd7f32', emoji: '🥉' }
+                : { label: '參與', color: '#7c3aed', emoji: '🌟' };
+
+    document.getElementById('resultWord').textContent = p.title;
+    document.getElementById('resultScore').textContent = scoreResult.total + '/100';
+    document.getElementById('resultScore').style.color = tier.color;
+    document.getElementById('resultTier').textContent = `${tier.emoji} ${tier.label}獎${audioNote}`;
+    document.getElementById('resultFeedback').textContent = feedback;
+
+    _renderSubScores(scoreResult.sub);
+    _renderDiffHighlight(target, scoreResult.align, transcript);
+    _renderFluencyPanel(scoreResult.fluencyMeta, features);
+    _renderWordRetryList(scoreResult.wrongChars, p);
+
+    document.getElementById('resultAI').innerHTML = `
+      <div style="margin-bottom:6px;"><b>你讀：</b>${_e(transcript || '（自訂模式）')}</div>
+      <div style="margin-bottom:6px;"><b>文章：</b>${_e(target)}</div>
+      <div style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜方法：${_e(scoringMethod)}</div>`;
+
+    if (scoreResult.total >= 80) showConfetti(15);
+  });
+}
+
+function _renderSubScores(sub) {
+  const el = document.getElementById('resultSubScores');
+  if (!el) return;
+  const items = [
+    { key: 'accuracy', label: '發音準確', icon: '🎯', color: '#22c55e' },
+    { key: 'coverage', label: '覆蓋完整', icon: '📖', color: '#0ea5e9' },
+    { key: 'fluency',  label: '流暢自然', icon: '💨', color: '#f59e0b' },
+    { key: 'expression', label: '朗讀感情', icon: '🎵', color: '#7c3aed' }
+  ];
+  el.innerHTML = items.map(it => {
+    const v = sub[it.key] || 0;
+    const pct = Math.max(0, Math.min(100, v));
+    const barColor = pct >= 80 ? '#22c55e' : pct >= 60 ? '#f59e0b' : '#ef4444';
+    return `<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:10px 8px;text-align:left;">
+      <div style="font-size:0.85em;color:#6b7280;display:flex;justify-content:space-between;align-items:center;">
+        <span>${it.icon} ${it.label}</span>
+        <b style="color:${barColor};">${v}</b>
+      </div>
+      <div style="background:#e5e7eb;height:6px;border-radius:3px;overflow:hidden;margin-top:4px;">
+        <div style="width:${pct}%;height:100%;background:${barColor};"></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function _renderDiffHighlight(target, align, transcript) {
+  const el = document.getElementById('resultDiff');
+  if (!el) return;
+  // Render alignment as colored spans, with target punctuation preserved.
+  // Walk through target char-by-char; for each char, find the alignment op covering it.
+  const tokens = _tokenize(target);  // includes Chinese chars only
+  const targetTokenIndex = [];  // map raw-target-char-index → token-index (or -1 for punct)
+  let ti = 0;
+  for (let i = 0; i < target.length; i++) {
+    if (_tokenize(target[i]).length > 0) { targetTokenIndex.push(ti); ti++; }
+    else targetTokenIndex.push(-1);
+  }
+  // Walk ops: build a map tokenIndex → op
+  const opByToken = {};
+  let opIdx = 0;
+  for (const o of align.ops) {
+    // Each op consumes 1 target token (or 0 for ins)
+    if (o.op !== 'ins') {
+      // opIdx is the position in targetTokens sequence; the Nth op that isn't ins corresponds to the Nth targetToken
+      const tIdx = Object.keys(opByToken).length === 0
+        ? 0
+        : 0;  // we'll re-derive by walking ops in order
+    }
+  }
+  // Simpler: rebuild mapping by walking ops in order and targetTokens in parallel
+  opByToken.length = 0;
+  const tTokenMap = {};  // token-index → op
+  let tokenCounter = 0;
+  for (const o of align.ops) {
+    if (o.op === 'ins') continue;  // ins is purely on user side, not in target
+    tTokenMap[tokenCounter] = o;
+    tokenCounter++;
+  }
+
+  // Now render target char-by-char
+  let html = '';
+  let renderedTokens = 0;
+  for (let i = 0; i < target.length; i++) {
+    const ch = target[i];
+    const tokenIdx = targetTokenIndex[i];
+    if (tokenIdx < 0) {
+      // punctuation / whitespace — render plain
+      html += _e(ch);
+    } else {
+      const op = tTokenMap[tokenIdx];
+      if (!op) { html += _e(ch); continue; }
+      if (op.op === 'match') {
+        html += `<span style="color:#16a34a;background:#dcfce7;padding:1px 3px;border-radius:4px;margin:0 1px;">${_e(ch)}</span>`;
+      } else if (op.op === 'sub') {
+        html += `<span style="color:#dc2626;background:#fee2e2;padding:1px 3px;border-radius:4px;margin:0 1px;text-decoration:line-through;" title="你讀咗「${_e(op.a)}」">${_e(ch)}</span>`;
+      } else if (op.op === 'del') {
+        html += `<span style="color:#6b7280;background:#f3f4f6;padding:1px 3px;border-radius:4px;margin:0 1px;border-bottom:2px dotted #9ca3af;" title="漏咗讀">${_e(ch)}</span>`;
+      } else {
+        html += _e(ch);
+      }
+      renderedTokens++;
+    }
+  }
+  // Append inserted tokens (extra words the student said that aren't in the passage)
+  const extras = align.ops.filter(o => o.op === 'ins');
+  if (extras.length) {
+    html += `<div style="margin-top:8px;font-size:0.85em;color:#92400e;">多咗讀：`;
+    for (const o of extras) {
+      html += `<span style="background:#fef3c7;padding:1px 4px;border-radius:4px;margin:0 2px;">${_e(o.b)}</span>`;
+    }
+    html += `</div>`;
+  }
+  el.innerHTML = html;
+}
+
+function _renderFluencyPanel(meta, features) {
+  const el = document.getElementById('resultFluency');
+  if (!el) return;
+  if (!features || !features.valid) {
+    el.innerHTML = `<div style="color:rgba(0,0,0,0.5);">⏱ 冇錄音數據 — 流暢度同感情需要實際錄音先評到</div>`;
+    return;
+  }
+  const cps = meta.cps || 0;
+  const cpsLabel = cps >= 1.5 && cps <= 4 ? '啱啱好' : cps < 1.5 ? '太慢' : '太快';
+  const cpsColor = cps >= 1.5 && cps <= 4 ? '#16a34a' : cps < 1.5 ? '#0ea5e9' : '#dc2626';
+  const pauseLabel = meta.longPauses === 0 ? '冇長停頓' : `有 ${meta.longPauses} 個長停頓（≥1秒）`;
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;">
+      <div><div style="font-size:0.8em;color:rgba(0,0,0,0.5);">錄音長度</div><div style="font-weight:bold;font-size:1.1em;">${meta.duration.toFixed(1)} 秒</div></div>
+      <div><div style="font-size:0.8em;color:rgba(0,0,0,0.5);">朗讀速度</div><div style="font-weight:bold;font-size:1.1em;color:${cpsColor};">${cps} 字/秒 <span style="font-size:0.8em;">(${cpsLabel})</span></div></div>
+      <div><div style="font-size:0.8em;color:rgba(0,0,0,0.5);">停頓</div><div style="font-weight:bold;font-size:1.1em;">${pauseLabel}</div></div>
+    </div>`;
+}
+
+function _renderWordRetryList(wrongChars, passage) {
+  const wrap = document.getElementById('resultWordRetry');
+  const list = document.getElementById('resultWordRetryList');
+  if (!wrap || !list) return;
+  if (!wrongChars || !wrongChars.length) {
+    wrap.style.display = 'none';
+    return;
+  }
+  // De-dup and cap at first 12
+  const uniq = [...new Set(wrongChars)].slice(0, 12);
+  list.innerHTML = uniq.map(ch =>
+    `<button onclick="_startWordRepractice('${_e(ch)}')" style="background:#fff;color:#dc2626;border:2px solid #dc2626;font-size:1.1em;padding:8px 14px;min-height:48px;border-radius:10px;font-weight:bold;">${_e(ch)}</button>`
+  ).join('');
+  wrap.style.display = 'block';
+}
+
+// ================== TTS / REPLAY ==================
+let _resultListenUtterance = null;
+function _resultListen() {
+  if (!('speechSynthesis' in window)) { showToast('❌ 瀏覽器不支援 TTS'); return; }
+  const p = state.currentPassage;
+  if (!p) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(p.text);
+  u.lang = 'zh-HK';
+  u.rate = 0.85;
+  _resultListenUtterance = u;
+  u.onend = () => { showToast('✅ 示範播放完'); };
+  u.onerror = (e) => { console.warn('TTS error', e); };
+  speechSynthesis.speak(u);
+  showToast('🔊 示範播放中...');
+}
+
+function _resultReplay() {
+  if (!_currentAudioBlob) { showToast('❌ 冇錄音可重播'); return; }
+  const url = URL.createObjectURL(_currentAudioBlob);
+  const audio = new Audio(url);
+  audio.onended = () => URL.revokeObjectURL(url);
+  audio.play().catch(e => { showToast('❌ 播放失敗：' + e.message); URL.revokeObjectURL(url); });
+  showToast('▶ 播放自己錄音...');
+}
+
+// ================== WORD REPRACTICE ==================
+let _repracticeWord = null;
+let _repracticeContext = null;
+let _repracticeRecorder = null;
+let _repracticeChunks = [];
+let _repracticeRecognition = null;
+
+function _startWordRepractice(word) {
+  if (!word || !state.currentPassage) return;
+  _repracticeWord = word;
+  const p = state.currentPassage;
+  // Find a 6-char context window around this word in the passage
+  const idx = p.text.indexOf(word);
+  let ctx = '';
+  if (idx >= 0) {
+    const start = Math.max(0, idx - 4);
+    const end = Math.min(p.text.length, idx + word.length + 4);
+    ctx = (start > 0 ? '…' : '') + p.text.slice(start, end) + (end < p.text.length ? '…' : '');
+  }
+  _repracticeContext = ctx;
+  document.getElementById('wordRepracticeWord').textContent = word;
+  document.getElementById('wordRepracticeContext').textContent = ctx;
+  document.getElementById('wordRepracticeStatus').innerHTML = '準備好就撳「🎤 讀一次」';
+  document.getElementById('wordRepracticeResult').innerHTML = '';
+  goTo('wordRepractice');
+  // TTS the word once on entry for ear reference
+  if ('speechSynthesis' in window) {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(word);
+    u.lang = 'zh-HK';
+    u.rate = 0.7;
+    speechSynthesis.speak(u);
+  }
+}
+
+function _repracticeListen() {
+  if (!('speechSynthesis' in window) || !_repracticeWord) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(_repracticeWord);
+  u.lang = 'zh-HK';
+  u.rate = 0.7;
+  speechSynthesis.speak(u);
+}
+
+function _repracticeRecord() {
+  if (!_repracticeWord) return;
+  const status = document.getElementById('wordRepracticeStatus');
+  const recBtn = document.getElementById('wordRepracticeRec');
+  recBtn.disabled = true;
+  recBtn.textContent = '⏺ 錄音中…';
+  recBtn.style.background = '#999';
+
+  if (state.asrEngine === 'webspeech' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    _repracticeRecognition = new SpeechRec();
+    _repracticeRecognition.lang = 'zh-HK';
+    _repracticeRecognition.continuous = false;
+    _repracticeRecognition.interimResults = false;
+    _repracticeRecognition.maxAlternatives = 3;
+    try { _repracticeRecognition.start(); } catch(e) {
+      status.innerHTML = '❌ 無法啟動錄音：' + e.message;
+      recBtn.disabled = false; recBtn.textContent = '🎤 讀一次'; recBtn.style.background = '#ef4444';
+      return;
+    }
+    _repracticeRecognition.onresult = (event) => {
+      const alts = Array.from(event.results[0]).map(a => a.transcript.trim());
+      _finishWordRepractice(alts, null);
+    };
+    _repracticeRecognition.onerror = (event) => {
+      status.innerHTML = '❌ 錄音出錯：' + event.error;
+      recBtn.disabled = false; recBtn.textContent = '🎤 讀一次'; recBtn.style.background = '#ef4444';
+    };
+    _repracticeRecognition.onend = () => {
+      recBtn.disabled = false; recBtn.textContent = '🎤 讀一次'; recBtn.style.background = '#ef4444';
+    };
+  } else if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      _repracticeRecorder = new MediaRecorder(stream);
+      _repracticeChunks = [];
+      _repracticeRecorder.ondataavailable = (e) => { if (e.data.size > 0) _repracticeChunks.push(e.data); };
+      _repracticeRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(_repracticeChunks, { type: 'audio/webm' });
+        _repracticeRecorder = null;
+        // For non-webspeech engines we still get a blob; we can't transcribe without the engine.
+        // Fall back to "recorded" confirmation only.
+        _finishWordRepractice([], blob);
+      };
+      _repracticeRecorder.start();
+      // 3-second auto-stop for single-word practice
+      setTimeout(() => {
+        if (_repracticeRecorder && _repracticeRecorder.state === 'recording') _repracticeRecorder.stop();
+      }, 3000);
+    }).catch(err => {
+      status.innerHTML = '❌ 麥克風權限被拒：' + err.message;
+      recBtn.disabled = false; recBtn.textContent = '🎤 讀一次'; recBtn.style.background = '#ef4444';
+    });
   } else {
-    // String-match scoring: Levenshtein distance + coverage
-    const clean = (s) => s.replace(/[，。！？、\s\n\r]/g, "").toLowerCase();
-    const tClean = clean(target);
-    const uClean = clean(transcript);
-
-    const similarity = calculateSimilarity(uClean, tClean);
-    const bonus = (uClean.includes(tClean) || tClean.includes(uClean)) ? 20 : 0;
-
-    // Coverage: how many characters of the passage were read
-    const targetChars = [...tClean];
-    const userChars = [...uClean];
-    const overlap = targetChars.filter(c => userChars.includes(c)).length;
-    const coverage = tClean.length > 0 ? overlap / tClean.length : 0;
-    const overlapBonus = overlap * 15;
-
-    // First-match bonus
-    const firstMatch = (targetChars[0] && userChars[0] && targetChars[0] === userChars[0]) ? 10 : 0;
-
-    // Combined score: similarity (40%) + coverage bonus (50%) + first-match (10%)
-    aiScore = Math.min(100, Math.floor(similarity * 40 + coverage * 50 + overlapBonus * 0.1 + firstMatch + bonus));
-    feedback = aiScore >= 85 ? '做得好！朗讀好流暢！' : aiScore >= 60 ? '唔錯！繼續努力～' : '再試一次，你可以嘅！';
-    scoringMethod = 'passage-match';
+    status.innerHTML = '❌ 此瀏覽器不支援錄音';
+    recBtn.disabled = false; recBtn.textContent = '🎤 讀一次'; recBtn.style.background = '#ef4444';
   }
+}
 
-  _recordPassageAttempt(p.id, p.title, aiScore, transcript);
-
-  // show result
-  goTo('result');
-  const tier = aiScore >= 90 ? { label: '金', color: '#ffd700', emoji: '🥇' } : aiScore >= 75 ? { label: '銀', color: '#c0c0c0', emoji: '🥈' } : aiScore >= 60 ? { label: '銅', color: '#cd7f32', emoji: '🥉' } : { label: '參與', color: '#7c3aed', emoji: '🌟' };
-
-  const resultCard = document.querySelector('#result .result-card') || document.getElementById('result');
-  document.getElementById('resultWord').textContent = p.title;
-  document.getElementById('resultScore').textContent = aiScore + '/100';
-  document.getElementById('resultScore').style.color = tier.color;
-  document.getElementById('resultFeedback').textContent = feedback;
-  document.getElementById('resultAI').innerHTML = `
-    <div style="margin-bottom:10px;"><b>評分：</b>${aiScore} 分（${tier.emoji} ${tier.label}獎）</div>
-    <div style="margin-bottom:6px;"><b>你讀：</b>${_e(transcript || '（自訂模式）')}</div>
-    <div style="margin-bottom:6px;"><b>文章：</b>${_e(target)}</div>
-    <div style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜方法：${_e(scoringMethod)}</div>`;
-
-  // Update retry/next buttons
-  const resultActions = document.getElementById('resultActions');
-  if (resultActions) {
-    resultActions.innerHTML = `
-      <button onclick="retryCurrentPassage()" style="flex:1;background:#f59e0b;font-size:1.1em;padding:14px;">🔄 再讀一次</button>
-      <button onclick="showPassageSelector()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">📖 其他文章 →</button>`;
+function _finishWordRepractice(alternatives, blob) {
+  const status = document.getElementById('wordRepracticeStatus');
+  const resultEl = document.getElementById('wordRepracticeResult');
+  const target = _repracticeWord;
+  const targetClean = _normText(target);
+  // Check if any alternative contains the target (allows "明月光" vs "明月  光")
+  let matched = false, closest = null;
+  for (const alt of alternatives) {
+    if (_normText(alt).includes(targetClean)) { matched = true; break; }
+    // Track closest for feedback
+    if (!closest || Math.abs(_normText(alt).length - targetClean.length) < Math.abs(_normText(closest).length - targetClean.length)) {
+      closest = alt;
+    }
   }
-
-  if (aiScore >= 80) {
-    showConfetti(15);
+  if (alternatives.length === 0 && blob) {
+    // Non-webspeech path: we have audio but no transcript
+    status.innerHTML = '✅ 已錄音（需用 Web Speech 先比對）';
+    resultEl.innerHTML = `<div style="background:#fef3c7;padding:10px;border-radius:10px;">錄咗音但冇 transcript 比對。建議喺 Engine Settings 揀 Web Speech 引擎再試。</div>`;
+    return;
+  }
+  if (matched) {
+    status.innerHTML = '✅ 讀啱咗！';
+    resultEl.innerHTML = `<div style="background:#dcfce7;padding:12px;border-radius:10px;color:#16a34a;font-weight:bold;">🎉 呢個字過咗！可以揀下一個。</div>`;
+  } else {
+    status.innerHTML = `你讀咗：${_e(closest || '（無）')}`;
+    resultEl.innerHTML = `<div style="background:#fee2e2;padding:12px;border-radius:10px;color:#dc2626;">
+      ❌ 仲未啱。參考：
+      <ol style="margin:6px 0 0 16px;padding:0;">
+        <li>撳「🔊 聽示範」再聽一次</li>
+        <li>大聲跟住讀</li>
+        <li>再撳「🎤 讀一次」錄多一次</li>
+      </ol>
+    </div>`;
   }
 }
 
