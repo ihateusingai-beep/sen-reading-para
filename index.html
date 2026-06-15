@@ -879,10 +879,59 @@ function startRecording() {
       return;
     }
 
+    // Parallel MediaRecorder capture for webspeech engine. Web Speech API
+    // gives us the transcript but no audio data, so fluency/expression
+    // sub-scores were always null AND the replay button had nothing to
+    // play. Capture the same mic stream independently so _analyzeAudioFeatures
+    // can compute duration/pause/RMS, AND _currentAudioBlob is set for
+    // the replay button. If getUserMedia fails (very rare since webspeech
+    // already opened the mic), we silently fall back to transcript-only.
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        // Don't clobber a recorder that was started for whisper/custom.
+        if (_currentRecorder) {
+          stream.getTracks().forEach(t => t.stop());
+          return;
+        }
+        const rec = new MediaRecorder(stream);
+        const chunks = [];
+        rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+        rec.onstop = () => {
+          stream.getTracks().forEach(t => t.stop());
+          // Only set if no other engine has already populated it
+          if (!_currentAudioBlob) {
+            _currentAudioBlob = new Blob(chunks, { type: 'audio/webm' });
+          }
+        };
+        _currentRecorder = rec;
+        try { rec.start(); }
+        catch (e) { console.warn('parallel recorder start failed', e); }
+      }).catch(e => { console.warn('parallel getUserMedia failed', e); });
+    }
+
     recognition.onresult = (event) => {
       const transcript = event.results[0][0].transcript.trim();
       status.innerHTML = `你讀咗：${_e(transcript)}`;
-      scorePassage(transcript);
+      // The parallel MediaRecorder's onstop may run AFTER onresult
+      // (recognition.stop() + recorder.stop() in _stopRecordingFromUI
+      //  fire onresult synchronously, but onstop is async). Poll up to
+      // 1500ms for the blob so _analyzeAudioFeatures has real audio
+      // data. Without this, fluency/expression are null and the replay
+      // button is broken for the webspeech engine. 1500ms is generous
+      // (typical onstop fires within 200ms) but covers slow devices.
+      const tryScore = (blob) => scorePassage(transcript, { audioBlob: blob || null });
+      if (_currentAudioBlob) {
+        tryScore(_currentAudioBlob);
+      } else {
+        let waited = 0;
+        const t = setInterval(() => {
+          waited += 50;
+          if (_currentAudioBlob || waited >= 1500) {
+            clearInterval(t);
+            tryScore(_currentAudioBlob);
+          }
+        }, 50);
+      }
     };
     // Module-scoped guard: only one fallback scorePassage call per
     // recognition session, regardless of which path triggers it.
