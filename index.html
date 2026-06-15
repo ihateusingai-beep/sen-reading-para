@@ -582,6 +582,30 @@ function showToast(msg) {
   setTimeout(() => t.style.display = 'none', 1800);
 }
 
+// Reusable confirm dialog (uses #confirmModal in DOM). Was missing pre-2026-06
+// and called from 6 sites (deleteStudent, resetStudentProgress,
+// clearAudioBaselines, clearWhisperCache, importStudentsJson); the missing
+// definition caused the App namespace to throw and the whole script to abort
+// before init() ran, hence "⏳ 載入中…" stuck on first load.
+function showConfirm(message, onYes) {
+  const modal = document.getElementById('confirmModal');
+  const msgEl = document.getElementById('confirmMsg');
+  const yesBtn = document.getElementById('confirmYes');
+  if (!modal || !msgEl || !yesBtn) {
+    // Fallback: native confirm if DOM missing.
+    if (window.confirm(message)) onYes && onYes();
+    return;
+  }
+  msgEl.textContent = message;
+  // Replace onclick each call (single listener, no leak).
+  yesBtn.onclick = () => { closeConfirmModal(); onYes && onYes(); };
+  modal.style.display = 'block';
+}
+function closeConfirmModal() {
+  const modal = document.getElementById('confirmModal');
+  if (modal) modal.style.display = 'none';
+}
+
 function goTo(page) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById(page).classList.add('active');
@@ -3717,7 +3741,7 @@ function resetToDefaultPassages() {
 // (avoids accidental global leakage of internal helpers that start with `_`).
 window.App = {
   // State & navigation
-  init, goTo, speak, showToast, showConfirm,
+  init, goTo, speak, showToast, showConfirm, closeConfirmModal,
   // Student login / CRUD
   selectStudentCard, cancelCardLogin, enterTeacherMode, exitTeacherMode,
   addNewStudent, editStudent, deleteStudent, importStudentsJson, exportStudentsJson,
