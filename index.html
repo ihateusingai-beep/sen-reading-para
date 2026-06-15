@@ -1128,6 +1128,52 @@ function _alignTokens(a, b) {
   return { ops, dp, distance: dp[m][n] };
 }
 
+// Filler-word analytics. Counts ins (extra) tokens in the alignment that
+// match a curated list of common Cantonese/Mandarin fillers. Heavy filler
+// use is a clinical signal for language-disordered reading: students who
+// frequently insert 呀/啦/囉 etc. tend to lose reading fluency and
+// confidence. Surfaced as a 5th sub-score row so teachers see it
+// alongside accuracy/coverage/fluency/expression.
+//
+//   score: 100 = 0% filler, 80 = 0-3% filler (natural), 60 = 3-7% (slight
+//          habit), 40 = 7-15% (concerning), 20 = 15-25% (heavy), 0 = >25%
+function _fillerStats(ops) {
+  // 粵語/普通話常見口頭禪 — list curated for SEN reading (avoid common
+  // words like 我/的/了 which are content, not fillers).
+  const FILLERS = new Set([
+    '呀', '啊', '啦', '囉', '呢', '嘅', '咩', '喎', '㗎', '㖭', '㗎喂', '哦', '噢', '誒',
+    'ya', 'ah', 'la', 'lo', 'ne', 'ge', 'me', 'wo', 'ga', 'ar', 'eh', 'oh'
+  ]);
+  let count = 0, totalIns = 0;
+  const fillerWords = [];
+  for (const o of ops) {
+    if (o.op === 'ins') {
+      totalIns++;
+      // o.b is the user-side token (single token like 呀, or longer
+      // multi-char fillers like 呀嗎). Single-char check is the common case.
+      const tok = String(o.b || '');
+      if (FILLERS.has(tok) || FILLERS.has(tok.toLowerCase())) {
+        count++;
+        fillerWords.push(tok);
+      }
+    }
+  }
+  // Ratio = filler insertions / total ins tokens. 0 fillers = perfect (100).
+  // Otherwise scaled: 1-3% = 80, 3-7% = 60, 7-15% = 40, 15-25% = 20, >25% = 0.
+  let score;
+  if (totalIns === 0 || count === 0) score = 100;
+  else {
+    const ratio = count / totalIns;  // 0..1, fraction of ins that are fillers
+    if (ratio <= 0.05) score = 100;
+    else if (ratio <= 0.15) score = 80;
+    else if (ratio <= 0.30) score = 60;
+    else if (ratio <= 0.50) score = 40;
+    else if (ratio <= 0.75) score = 20;
+    else score = 0;
+  }
+  return { count, totalIns, score, words: fillerWords };
+}
+
 // Accuracy: alignment-based. match / max(target, user) * 100, with sub treated as half-credit.
 function _accuracyScore(ops, targetLen, userLen) {
   if (targetLen === 0) return userLen === 0 ? 100 : 0;
@@ -1243,6 +1289,13 @@ function _computePassageScore(target, transcript, audioFeatures, passageType) {
   const accuracy = _accuracyScore(align.ops, targetTokens.length, userTokens.length);
   const coverage = _coverageScore(align.ops, targetTokens.length);
 
+  // Filler-word analytics: count ins (extra tokens) that are common
+  // Cantonese/Mandarin fillers. Heavy filler use is a clinical signal
+  // for language-disordered reading and shouldn't be silently hidden in
+  // the alignment diff. We surface a 5th sub-score row and log the raw
+  // count to the audit trail.
+  const filler = _fillerStats(align.ops);
+
   // Fluency + expression need audio; fall back to neutral if no audio.
   // passageType biases the pace band (poetry: [0.8, 2.5] cps; prose: [1.5, 4]).
   const charCount = userTokens.length;
@@ -1251,23 +1304,24 @@ function _computePassageScore(target, transcript, audioFeatures, passageType) {
   const fluency = _fluencyScore(charCount, dur, longPauses, passageType);
   const expression = _expressionScore(longPauses, charCount, dur);
 
-  // Weighted total: accuracy 35% / coverage 30% / fluency 20% / expression 15%
-  // If no audio features, redistribute weight: accuracy 50% / coverage 50%
+  // Weighted total: accuracy 32% / coverage 28% / fluency 18% / expression 12% / filler 10%
+  // (filler replaces a small slice of expression since filler analytics
+  // is text-only and observable without audio).
+  // If no audio features, redistribute weight: accuracy 45% / coverage 40% / filler 15%
   let total, sub;
   if (dur > 0) {
-    sub = { accuracy, coverage, fluency, expression };
+    sub = { accuracy, coverage, fluency, expression, filler: filler.score };
     // fluency/expression may be null if their input was zero — fall through
     // to the no-audio weights so the total stays well-defined.
     const f = (typeof fluency === 'number') ? fluency : 0;
     const e = (typeof expression === 'number') ? expression : 0;
-    total = Math.round(accuracy * 0.35 + coverage * 0.30 + f * 0.20 + e * 0.15);
+    total = Math.round(accuracy * 0.32 + coverage * 0.28 + f * 0.18 + e * 0.12 + filler.score * 0.10);
   } else {
     // No audio captured — fluency/expression are unmeasurable. Use null
     // so the UI can render "—" instead of a misleading red 0. Weight
-    // rebalances to 50/50 accuracy+coverage (which are the only dimensions
-    // that don't require audio).
-    sub = { accuracy, coverage, fluency: null, expression: null };
-    total = Math.round(accuracy * 0.50 + coverage * 0.50);
+    // rebalances to accuracy+coverage+filler (text-only dimensions).
+    sub = { accuracy, coverage, fluency: null, expression: null, filler: filler.score };
+    total = Math.round(accuracy * 0.45 + coverage * 0.40 + filler.score * 0.15);
   }
 
   // Build word-level error list (sub + del targets) for the "single word retry" buttons.
@@ -1329,7 +1383,9 @@ function scorePassage(transcript, opts) {
     document.getElementById('resultTier').textContent = `${tier.emoji} ${tier.label}獎`;
     document.getElementById('resultFeedback').textContent = reason || '請再試一次。';
     // Empty sub-scores: accuracy/coverage=0, fluency/expression=null (no data)
-    const emptySub = { accuracy: 0, coverage: 0, fluency: null, expression: null };
+    // Empty sub-scores: accuracy/coverage=0, fluency/expression=null (no data),
+    // filler=100 (no ins tokens to flag = perfect filler control)
+    const emptySub = { accuracy: 0, coverage: 0, fluency: null, expression: null, filler: 100 };
     try { _renderSubScores(emptySub); } catch(e) { console.warn(e); }
     try { _renderDiffHighlight(target, { ops: [] }, transcript || ''); } catch(e) { console.warn(e); }
     try { _renderFluencyPanel({ charCount: 0, duration: 0, longPauses: 0, cps: 0 }, { valid: false }); } catch(e) { console.warn(e); }
@@ -1366,7 +1422,7 @@ function scorePassage(transcript, opts) {
         audioNote = '（冇錄音數據，流暢度同感情用預設值）';
       }
 
-      _recordPassageAttempt(p.id, p.title, scoreResult.total, transcript);
+      _recordPassageAttempt(p.id, p.title, scoreResult.total, transcript, target);
 
       goTo('result');
       const tier = _tierFromScore(scoreResult.total);
@@ -1409,7 +1465,8 @@ function _renderSubScores(sub) {
     { key: 'accuracy', label: '發音準確', icon: '🎯', color: '#22c55e' },
     { key: 'coverage', label: '覆蓋完整', icon: '📖', color: '#0ea5e9' },
     { key: 'fluency',  label: '流暢自然', icon: '💨', color: '#f59e0b' },
-    { key: 'expression', label: '朗讀感情', icon: '🎵', color: '#7c3aed' }
+    { key: 'expression', label: '朗讀感情', icon: '🎵', color: '#7c3aed' },
+    { key: 'filler',    label: '口頭禪控制', icon: '🤐', color: '#ec4899' }
   ];
   el.innerHTML = items.map(it => {
     // null = "no data" (no audio captured). Render "—" with grey styling
@@ -2043,6 +2100,47 @@ async function init() {
 
   _renderStudentGrid();
   updateProgress();
+
+  // Multi-tab sync: when another tab writes to localStorage, refresh our
+  // in-memory state and re-render the visible dashboard. This is the
+  // use case where a teacher has the dashboard tab open and the student
+  // completes a reading on the iPad (or a second dashboard tab is open).
+  // Without this, the teacher sees stale numbers until a manual reload.
+  // We re-read yueStudents / yueProgress / yueAsrEngine on every storage
+  // event and re-render the current page if it's teacher/dashboard or
+  // myProgress (the two surfaces that depend on global state).
+  window.addEventListener('storage', (e) => {
+    if (!e.key) return;  // localStorage.clear() — re-render everything
+    if (e.key === 'yueStudents' || e.key === 'yueSchemaVersion') {
+      try {
+        const sData = JSON.parse(localStorage.getItem('yueStudents') || '{}');
+        if (Array.isArray(sData.students)) state.students = sData.students;
+      } catch(e) { /* ignore */ }
+      _renderStudentGrid();
+    }
+    if (e.key === 'yueProgress' || e.key === 'yueSchemaVersion') {
+      try {
+        const raw = JSON.parse(localStorage.getItem('yueProgress') || '{}');
+        const cleaned = {};
+        for (const sid of Object.keys(raw)) cleaned[sid] = _sanitizeProgress(raw[sid]);
+        state.progress = cleaned;
+      } catch(e) { /* ignore */ }
+    }
+    if (e.key === 'yueAsrEngine' && !e.newValue) {
+      // External clear — fall back to default
+      state.asrEngine = 'webspeech';
+    } else if (e.key === 'yueAsrEngine' && e.newValue && _ASR_ENGINES[e.newValue]) {
+      state.asrEngine = e.newValue;
+    }
+    // Re-render whichever page the user is currently on
+    const activePage = document.querySelector('.page.active');
+    if (!activePage) return;
+    const id = activePage.id;
+    if (id === 'teacher') renderDashboard();
+    else if (id === 'myProgress') showMyProgress();
+    else if (id === 'hub') updateHubStatus();
+    else if (id === 'home') _renderStudentGrid();
+  });
 }
 
 // ================== LOGIN ==================
@@ -2576,6 +2674,28 @@ function _getAsrStats() {
   return stats;
 }
 
+// Filler-word rollup across all students' reading records. Returns
+// { totalFiller, totalIns, ratio, topFillers: {呀: 23, 啦: 11, ...} }
+// Excludes records that pre-date the filler feature (no fillerCount field).
+function _getFillerStats() {
+  const totals = { totalFiller: 0, totalIns: 0, topFillers: {} };
+  Object.values(state.progress).forEach(p => {
+    (p.records || []).forEach(r => {
+      if (typeof r.fillerCount !== 'number' || typeof r.fillerIns !== 'number') return;
+      totals.totalFiller += r.fillerCount;
+      totals.totalIns += r.fillerIns;
+      // Also tally the specific fillers if we stored them
+      if (Array.isArray(r.fillerWords)) {
+        r.fillerWords.forEach(w => {
+          totals.topFillers[w] = (totals.topFillers[w] || 0) + 1;
+        });
+      }
+    });
+  });
+  totals.ratio = totals.totalIns > 0 ? (totals.totalFiller / totals.totalIns) : 0;
+  return totals;
+}
+
 function clearAudioBaselines() {
   showConfirm('清除所有聲紋 baseline？清除後自訂模式需要重新建立基線。', () => {
     localStorage.removeItem('yueAudioBaselines');
@@ -2702,7 +2822,7 @@ async function clearWhisperCache() {
 }
 
 // ================== PROGRESS TRACKING ==================
-function _recordPassageAttempt(passageId, passageTitle, score, transcript) {
+function _recordPassageAttempt(passageId, passageTitle, score, transcript, target) {
   if (!state.currentStudentId) return;
   const sid = state.currentStudentId;
   if (!state.progress[sid]) {
@@ -2722,7 +2842,16 @@ function _recordPassageAttempt(passageId, passageTitle, score, transcript) {
   if (bp.history.length > 20) bp.history = bp.history.slice(-20);
   p.totalAttempts += 1;
   p.lastSession = now;
-  p.records.push({ passageId, passageTitle, score, transcript, at: now });
+  // Extract filler analytics from the same alignment the score came from
+  // (we re-derive here to keep the storage shape self-contained — the
+  // caller already has the score, so re-deriving is cheap at 2 ms).
+  const filler = _fillerStats(_alignTokens(_tokenize(_normText(target)), _tokenize(_normText(transcript))).ops);
+  p.records.push({
+    passageId, passageTitle, score, transcript, at: now,
+    fillerCount: filler.count,
+    fillerIns: filler.totalIns,
+    fillerWords: filler.words.slice(0, 20)  // cap to first 20 for storage
+  });
   if (p.records.length > 200) p.records = p.records.slice(-200);
   state.completed.assessment = true;
   updateHubStatus();
@@ -2907,6 +3036,31 @@ function renderDashboard() {
     html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">🎙 評估引擎使用分佈</p>
       ${_renderPieChart(slices)}
+    </div>`;
+  }
+
+  // ===== Filler-word rollup =====
+  // Class-level signal: across all students, how many ins tokens are
+  // common Cantonese/Mandarin fillers (呀/啦/囉/呢/嘅 etc.). High
+  // filler ratio is a clinical indicator for reading-disordered
+  // classrooms — surfaced here so the teacher can spot a class-wide
+  // trend without opening individual student detail pages.
+  const fillerRollup = _getFillerStats();
+  if (fillerRollup.totalIns > 0) {
+    const topFillerEntries = Object.entries(fillerRollup.topFillers)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6);
+    const ratioPct = (fillerRollup.ratio * 100).toFixed(1);
+    const ratioColor = fillerRollup.ratio < 0.05 ? '#22c55e' : fillerRollup.ratio < 0.15 ? '#f59e0b' : '#ef4444';
+    html += `<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;margin-bottom:14px;">
+      <p style="font-weight:bold;color:#ec4899;margin-bottom:8px;">🤐 口頭禪分析（全班）</p>
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;">
+        <div style="font-size:2.2em;font-weight:bold;color:${ratioColor};">${ratioPct}%</div>
+        <div style="flex:1;color:rgba(255,255,255,0.7);font-size:0.9em;">全班 ${fillerRollup.totalFiller} 個口頭禪 / ${fillerRollup.totalIns} 個 extra token</div>
+      </div>
+      ${topFillerEntries.length > 0 ? `<div style="display:flex;flex-wrap:wrap;gap:6px;">
+        ${topFillerEntries.map(([word, count]) => `<span style="background:rgba(236,72,153,0.2);color:#f9a8d4;padding:4px 10px;border-radius:8px;font-size:0.9em;">${word} × ${count}</span>`).join('')}
+      </div>` : ''}
     </div>`;
   }
 
