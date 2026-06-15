@@ -861,6 +861,16 @@ function startRecording() {
       status.innerHTML = `你讀咗：${_e(transcript)}`;
       scorePassage(transcript);
     };
+    // Module-scoped guard: only one fallback scorePassage call per
+    // recognition session, regardless of which path triggers it.
+    let _recognitionScored = false;
+    function _fallbackScore(reason, msg) {
+      if (_recognitionScored) return;
+      _recognitionScored = true;
+      const p = state.currentPassage;
+      if (p) scorePassage('', { engine: 'webspeech', noSpeech: true, errorMsg: msg || reason });
+    }
+
     recognition.onerror = (event) => {
       console.error('Speech error:', event.error);
       let msg = '❌ 錄音出錯';
@@ -871,15 +881,26 @@ function startRecording() {
       else if (event.error === 'service-not-allowed') msg = '❌ 瀏覽器不支援，請用 Chrome';
       else if (event.error === 'aborted') msg = '❌ 已取消，請再試';
       else msg = '❌ 請大聲啲或換個安靜地方';
-      status.innerHTML = msg + '，請再試';
+      status.innerHTML = msg + ' — 跳到結果頁。';
+      // Schedule the fallback score. onend will fire next; whichever
+      // path runs first sets _recognitionScored and the other is a no-op.
+      setTimeout(() => _fallbackScore('error', msg), 600);
     };
     recognition.onend = () => {
-      // FALLBACK only: onresult fires BEFORE onend if there was a result.
-      // If onresult never fired (no speech detected, aborted, etc.), show a
-      // helpful prompt here so the user isn't left looking at "⏳ 處理中…".
-      // Don't overwrite onresult's output (which already set "你讀咗：...").
-      if (status.innerHTML.includes('處理中') || status.innerHTML.includes('錄音中')) {
-        status.innerHTML = `錄音結束 — 冇收到語音。撳「🎤 讀一次」重試，或撳「📖 其他文章 →」揀別篇。`;
+      // FALLBACK: onresult fires BEFORE onend if there was a result.
+      // If onresult never fired (no speech detected, aborted, etc.), we
+      // STILL need to call scorePassage so the user lands on the result
+      // page (with a 0 score) — not stranded on "⏳ 處理中…".
+      // _recognitionScored guard ensures only one fallback fires even if
+      // both onerror and onend try to recover.
+      const alreadyScored = status.innerHTML.startsWith('你讀咗：');
+      if (!alreadyScored) {
+        const p = state.currentPassage;
+        if (p) {
+          _fallbackScore('end');
+        } else {
+          status.innerHTML = `錄音結束 — 冇收到語音。撳「🎤 讀一次」重試，或撳「📖 其他文章 →」揀別篇。`;
+        }
       }
     };
   } else {
@@ -898,27 +919,50 @@ function startRecording() {
         _currentAudioBlob = blob;
         _currentRecorder = null;
         try {
-          const result = await engine.transcribe(blob, (progress) => {
-            status.innerHTML = '⏳ ' + (progress.message || '處理中…');
-          });
-          // If engine returned text, score it. If empty (mock/whisper not implemented), fall back.
-if (result.text) {
+          // 3-second watchdog for transcribe. If engine is a mock / unimpl
+          // (whisper pending model download) and transcribe never resolves,
+          // we still need to land on a result page.
+          let transcribeResult;
+          try {
+            transcribeResult = await Promise.race([
+              engine.transcribe(blob, (progress) => {
+                status.innerHTML = '⏳ ' + (progress.message || '處理中…');
+              }),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('transcribe timeout (3s)')), 3000))
+            ]);
+          } catch (transcribeErr) {
+            console.warn('[onstop] transcribe failed/timed out:', transcribeErr.message);
+            transcribeResult = { text: '', error: transcribeErr.message };
+          }
+          const result = transcribeResult || { text: '' };
+          // If engine returned text, score it. If empty (mock/whisper not
+          // implemented, or timeout), fall through to the custom/manual path.
+          if (result.text) {
             status.innerHTML = `你讀咗：${_e(result.text)}`;
             scorePassage(result.text, { engine: engine.id, audioBlob: blob, raw: result.raw });
           } else {
-            // Engine returned no text (e.g. whisper not yet implemented, or custom mode)
             if (engine.id === 'custom') {
               status.innerHTML = '🎤 自訂模式：分析聲音特徵中…';
-              const customScore = await _customScoreAudio(blob, state.currentPassage);
+              let customScore;
+              try {
+                customScore = await _customScoreAudio(blob, state.currentPassage);
+              } catch (e) { customScore = { score: 0, error: e.message }; }
               scorePassage('', { engine: 'custom', customScore, audioBlob: blob });
             } else {
-              status.innerHTML = `⚠️ ${engine.name} 未能識別。請用 Web Speech 或輸入你讀嘅文字：`;
-              _promptManualPassageInput(status, state.currentPassage);
+              // Whisper / engine that returned no text: STILL go to result
+              // page with a fallback 0 score + helpful note. The old path
+              // prompted for manual input, which could be skipped or hang.
+              status.innerHTML = `⚠️ ${engine.name} 未能識別 — 跳到結果頁。`;
+              scorePassage('', { engine: engine.id, audioBlob: blob, noSpeech: true });
             }
           }
         } catch (e) {
-          console.error(e);
-          status.innerHTML = '❌ 引擎錯誤：' + e.message;
+          // Outer catch (very rare — should not happen now that inner has
+          // its own try/catch). Stay safe: navigate to fallback result.
+          console.error('[onstop] outer error:', e);
+          if (state.currentPassage) {
+            scorePassage('', { engine: engine.id, audioBlob: blob, noSpeech: true });
+          }
         }
       };
       _currentRecorder.start();
@@ -1209,56 +1253,111 @@ function _computePassageScore(target, transcript, audioFeatures) {
 }
 
 function scorePassage(transcript, opts) {
+  // Outer try/catch + .catch + Promise.race watchdog — guarantees the user
+  // always lands on the result page, even if audio decode, transcribe, or
+  // scoring throws. Without this, an exception inside _analyzeAudioFeatures
+  // or any of the 4 sub-renderers would strand the user on '⏳ 處理中…'
+  // forever (the previous implementation had no .catch on the inner promise).
   opts = opts || {};
   const p = state.currentPassage;
+  if (!p) {
+    // No passage context — should never happen, but stay safe.
+    showToast('❌ 錯誤：搵唔到當前文章');
+    return;
+  }
   const target = p.text || '';
   const isCustom = (opts.engine === 'custom' && opts.customScore);
 
-  // Async: get audio features (may be null for manual text input)
-  _analyzeAudioFeatures(opts.audioBlob, (transcript || '').length).then(features => {
-    let scoreResult, feedback, scoringMethod, audioNote = '';
+  // 5-second watchdog: if anything hangs in the scoring pipeline beyond
+  // this, force-navigate to a fallback result page with a 0 score so the
+  // user is never stranded.
+  let watchdogFired = false;
+  const watchdog = setTimeout(() => {
+    watchdogFired = true;
+    console.warn('[score] watchdog fired after 5s — forcing fallback result');
+    _renderFallbackResult(p, transcript, opts, '⏰ 處理超時，已自動跳到結果頁。');
+  }, 5000);
 
-    if (isCustom) {
-      // Custom engine: respect its score, but still produce sub-scores for diagnostics
-      const custom = opts.customScore;
-      scoreResult = _computePassageScore(target, transcript, features);
-      // Override total with custom score, but keep sub-scores as informational
-      scoreResult.total = custom.score;
-      feedback = custom.score >= 85 ? '做得好！' : custom.score >= 60 ? '唔錯！繼續努力～' : '再嚟多次！';
-      scoringMethod = 'custom-audio';
-    } else {
-      scoreResult = _computePassageScore(target, transcript, features);
-      const t = scoreResult.total;
-      feedback = t >= 85 ? '做得好！朗讀好流暢！' : t >= 60 ? '唔錯！繼續努力～' : '再試一次，你可以嘅！';
-      scoringMethod = 'passage-4dim';
-    }
-
-    if (!features.valid && !isCustom) {
-      audioNote = '（冇錄音數據，流暢度同感情用預設值）';
-    }
-
-    _recordPassageAttempt(p.id, p.title, scoreResult.total, transcript);
-
+  // Helper: navigate to result with whatever sub-render data we have.
+  function _renderFallbackResult(p, transcript, opts, reason) {
     goTo('result');
-    const tier = _tierFromScore(scoreResult.total);
-
     document.getElementById('resultWord').textContent = p.title;
-    document.getElementById('resultScore').textContent = scoreResult.total + '/100';
+    const total = 0;
+    document.getElementById('resultScore').textContent = total + '/100';
+    const tier = _tierFromScore(total);
     document.getElementById('resultScore').style.color = tier.color;
-    document.getElementById('resultTier').textContent = `${tier.emoji} ${tier.label}獎${audioNote}`;
-    document.getElementById('resultFeedback').textContent = feedback;
-
-    _renderSubScores(scoreResult.sub);
-    _renderDiffHighlight(target, scoreResult.align, transcript);
-    _renderFluencyPanel(scoreResult.fluencyMeta, features);
-    _renderWordRetryList(scoreResult.wrongChars, p);
-
+    document.getElementById('resultTier').textContent = `${tier.emoji} ${tier.label}獎`;
+    document.getElementById('resultFeedback').textContent = reason || '請再試一次。';
+    const emptySub = { accuracy: 0, coverage: 0, fluency: 0, expression: 0 };
+    try { _renderSubScores(emptySub); } catch(e) { console.warn(e); }
+    try { _renderDiffHighlight(target, { ops: [] }, transcript || ''); } catch(e) { console.warn(e); }
+    try { _renderFluencyPanel({ charCount: 0, duration: 0, longPauses: 0, cps: 0 }, { valid: false }); } catch(e) { console.warn(e); }
+    try { _renderWordRetryList([], p); } catch(e) { console.warn(e); }
     document.getElementById('resultAI').innerHTML = `
-      <div style="margin-bottom:6px;"><b>你讀：</b>${_e(transcript || '（自訂模式）')}</div>
+      <div style="margin-bottom:6px;"><b>你讀：</b>${_e(transcript || '（無收到語音）')}</div>
       <div style="margin-bottom:6px;"><b>文章：</b>${_e(target)}</div>
-      <div style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜方法：${_e(scoringMethod)}</div>`;
+      <div style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜原因：${_e(reason || 'engine error')}</div>`;
+  }
 
-    if (scoreResult.total >= SCORING.TIER_GOLD) showConfetti(15);
+  // Inner pipeline
+  _analyzeAudioFeatures(opts.audioBlob, (transcript || '').length).then(features => {
+    if (watchdogFired) return;  // watchdog already navigated; don't double-render
+    clearTimeout(watchdog);
+    try {
+      let scoreResult, feedback, scoringMethod, audioNote = '';
+
+      if (isCustom) {
+        // Custom engine: respect its score, but still produce sub-scores for diagnostics
+        const custom = opts.customScore;
+        scoreResult = _computePassageScore(target, transcript, features);
+        // Override total with custom score, but keep sub-scores as informational
+        scoreResult.total = custom.score;
+        feedback = custom.score >= 85 ? '做得好！' : custom.score >= 60 ? '唔錯！繼續努力～' : '再嚟多次！';
+        scoringMethod = 'custom-audio';
+      } else {
+        scoreResult = _computePassageScore(target, transcript, features);
+        const t = scoreResult.total;
+        feedback = t >= 85 ? '做得好！朗讀好流暢！' : t >= 60 ? '唔錯！繼續努力～' : '再試一次，你可以嘅！';
+        scoringMethod = 'passage-4dim';
+      }
+
+      if (!features.valid && !isCustom) {
+        audioNote = '（冇錄音數據，流暢度同感情用預設值）';
+      }
+
+      _recordPassageAttempt(p.id, p.title, scoreResult.total, transcript);
+
+      goTo('result');
+      const tier = _tierFromScore(scoreResult.total);
+
+      document.getElementById('resultWord').textContent = p.title;
+      document.getElementById('resultScore').textContent = scoreResult.total + '/100';
+      document.getElementById('resultScore').style.color = tier.color;
+      document.getElementById('resultTier').textContent = `${tier.emoji} ${tier.label}獎${audioNote}`;
+      document.getElementById('resultFeedback').textContent = feedback;
+
+      _renderSubScores(scoreResult.sub);
+      _renderDiffHighlight(target, scoreResult.align, transcript);
+      _renderFluencyPanel(scoreResult.fluencyMeta, features);
+      _renderWordRetryList(scoreResult.wrongChars, p);
+
+      document.getElementById('resultAI').innerHTML = `
+        <div style="margin-bottom:6px;"><b>你讀：</b>${_e(transcript || '（自訂模式）')}</div>
+        <div style="margin-bottom:6px;"><b>文章：</b>${_e(target)}</div>
+        <div style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜方法：${_e(scoringMethod)}</div>`;
+
+      if (scoreResult.total >= SCORING.TIER_GOLD) showConfetti(15);
+    } catch (e) {
+      console.error('[score] render failed:', e);
+      showToast('❌ 評分出錯，已跳到結果頁。');
+      _renderFallbackResult(p, transcript, opts, '評分錯誤：' + e.message);
+    }
+  }).catch(e => {
+    if (watchdogFired) return;
+    clearTimeout(watchdog);
+    console.error('[score] pipeline failed:', e);
+    showToast('❌ 處理失敗，已跳到結果頁。');
+    _renderFallbackResult(p, transcript, opts, '引擎錯誤：' + e.message);
   });
 }
 
