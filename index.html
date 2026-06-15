@@ -840,6 +840,18 @@ function startRecording() {
 
   // For non-WebSpeech engines, we use MediaRecorder to capture audio blob
   if (engine.id === 'webspeech') {
+    // Abort any prior recognition session before starting a new one. The
+    // previous session's onend can fire AFTER the student has moved on to
+    // a new passage (e.g. a slow onend from a prior noSpeech path), and
+    // would otherwise trigger _fallbackScore against the new currentPassage,
+    // producing a phantom 0 score the student didn't earn. Without this
+    // guard, the user sees: "I read 床前明月光 perfectly" → result page
+    // suddenly shows 0 分 on the NEW passage. (Production fix 2026-06-15.)
+    if (recognition) {
+      try { recognition.abort(); } catch(e) { /* ignore */ }
+      try { recognition.onend = null; recognition.onerror = null; recognition.onresult = null; } catch(e) {}
+      recognition = null;
+    }
     if (!('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
       status.innerHTML = '❌ 請用 Chrome（Safari 支援有限）';
       return;
@@ -914,6 +926,14 @@ function startRecording() {
       const chunks = [];
       _currentRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
       _currentRecorder.onstop = async () => {
+        // Guard against double-fire: if 完成 is tapped twice (e.g. SEN
+        // student re-tapping before the first tap's async transcribe has
+        // returned), both stop() calls land on the same MediaRecorder
+        // instance, and the same onstop can fire twice. The 完成 button
+        // is disabled in _stopRecordingFromUI but a queued click event
+        // can still land. Without this guard: 2 history records, double
+        // confetti, and double progress write.
+        if (_currentRecorder !== this) return;
         stream.getTracks().forEach(t => t.stop());
         const blob = new Blob(chunks, { type: 'audio/webm' });
         _currentAudioBlob = blob;
@@ -1236,13 +1256,19 @@ function _computePassageScore(target, transcript, audioFeatures) {
     total = Math.round(accuracy * 0.50 + coverage * 0.50);
   }
 
-  // Build word-level error list (sub + del targets) for the "single word retry" buttons
+  // Build word-level error list (sub + del targets) for the "single word retry" buttons.
+  // Convention (see _alignTokens comment): a = target, b = user.
+  //   sub: target had `a`, user said `b` instead → student should retry `a`
+  //   del: target had `a`, user didn't say anything → student should retry `a`
+  // Earlier (pre-2026-06-15) this had `expected: o.b` which is the USER token,
+  // not the target — so the retry list showed characters the student *said*
+  // rather than the ones they *missed*. Routing them to the wrong word.
   const errorWords = [];
   for (const o of align.ops) {
-    if (o.op === 'sub') errorWords.push({ kind: 'sub', expected: o.b, actual: o.a });
+    if (o.op === 'sub') errorWords.push({ kind: 'sub', expected: o.a, actual: o.b });
     else if (o.op === 'del') errorWords.push({ kind: 'miss', expected: o.a, actual: null });
   }
-  // wrongChars = set of target chars that the student got wrong or missed.
+  // wrongChars = set of TARGET chars the student got wrong or missed.
   // Used to render the "single word retry" buttons.
   const wrongChars = [...new Set(errorWords.map(w => w.expected))];
 
