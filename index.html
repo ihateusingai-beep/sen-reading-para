@@ -902,6 +902,12 @@ function startRecording() {
           if (!_currentAudioBlob) {
             _currentAudioBlob = new Blob(chunks, { type: 'audio/webm' });
           }
+          // Clear the recorder reference so a subsequent startRecording
+          // (e.g. user records a 2nd passage) can open a fresh parallel
+          // recorder. Without this, the `if (_currentRecorder)` guard
+          // above permanently bails out and we lose audioBlob coverage
+          // for the 2nd+ recording session in the same page session.
+          if (_currentRecorder === rec) _currentRecorder = null;
         };
         _currentRecorder = rec;
         try { rec.start(); }
