@@ -95,6 +95,60 @@ button:active { transform:scale(0.95); }
 .row-flex   { display:flex; align-items:center; gap:14px; }
 .bg-soft    { background:rgba(255,255,255,0.05); }
 .radius-12  { border-radius:12px; }
+/* Recording status progress bars — visual feedback for the 3 stages of
+   a recording session: 🔴 錄音中 (active mic), ⏹ 完成 (transition),
+   ⏳ 處理中… (post-recording scoring). The bars use CSS animations
+   so the user always sees motion, even when the underlying promise
+   is stuck (e.g. Chrome mic mutex blocking parallel MediaRecorder).
+   The animations are GPU-composited (transform: translateX) so they
+   run smoothly even on low-end devices. */
+@keyframes recbar-recording {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+@keyframes recbar-processing {
+  0%   { transform: translateX(-100%); width: 30%; }
+  50%  { width: 60%; }
+  100% { transform: translateX(220%); width: 30%; }
+}
+@keyframes recbar-pulse {
+  0%, 100% { opacity: 0.85; }
+  50%      { opacity: 1; }
+}
+.recbar {
+  position: relative;
+  width: 100%;
+  height: 8px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.recbar-recording {
+  background: linear-gradient(90deg,
+    rgba(239,68,68,0) 0%,
+    rgba(239,68,68,0.95) 50%,
+    rgba(239,68,68,0) 100%);
+  height: 100%;
+  width: 50%;
+  animation: recbar-recording 1.6s ease-in-out infinite,
+             recbar-pulse 1.0s ease-in-out infinite;
+}
+.recbar-processing {
+  background: linear-gradient(90deg,
+    rgba(14,165,233,0) 0%,
+    rgba(14,165,233,0.95) 50%,
+    rgba(14,165,233,0) 100%);
+  height: 100%;
+  animation: recbar-processing 2.0s ease-in-out infinite;
+}
+.recbar-whisper {
+  background: linear-gradient(90deg,
+    rgba(124,58,237,0) 0%,
+    rgba(124,58,237,0.95) 50%,
+    rgba(124,58,237,0) 100%);
+  height: 100%;
+  animation: recbar-processing 2.5s ease-in-out infinite;
+}
 </style>
 </head>
 <body>
@@ -833,7 +887,11 @@ function _stopRecordingFromUI() {
   if (status) {
     status.innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0;">
-        <div style="font-size:1.3em;color:#0ea5e9;font-weight:bold;">⏳ 處理中…</div>
+        <div style="font-size:1.3em;color:#0ea5e9;font-weight:bold;display:flex;align-items:center;gap:8px;">
+          <span style="display:inline-block;width:12px;height:12px;background:#0ea5e9;border-radius:50%;animation:recbar-pulse 1.2s ease-in-out infinite;"></span>
+          ⏳ 處理中…
+        </div>
+        <div class="recbar"><div class="recbar-processing"></div></div>
         <div style="font-size:0.95em;color:rgba(255,255,255,0.6);">分析錄音 + 評分中</div>
       </div>`;
   }
@@ -881,7 +939,11 @@ function startRecording() {
 
   status.innerHTML = `
     <div style="display:flex;flex-direction:column;align-items:center;gap:12px;margin:8px 0;">
-      <div style="font-size:1.4em;color:#ef4444;font-weight:bold;">🔴 錄音中</div>
+      <div style="font-size:1.4em;color:#ef4444;font-weight:bold;display:flex;align-items:center;gap:8px;">
+        <span style="display:inline-block;width:14px;height:14px;background:#ef4444;border-radius:50%;animation:recbar-pulse 1.0s ease-in-out infinite;"></span>
+        🔴 錄音中
+      </div>
+      <div class="recbar"><div class="recbar-recording"></div></div>
       <div style="font-size:1em;color:rgba(255,255,255,0.7);">大聲朗讀文章，準備好就撳「完成」 👄</div>
       <button onclick="App._stopRecordingFromUI()" style="background:#22c55e;font-size:1.2em;padding:14px 32px;min-height:56px;border-radius:14px;color:#fff;min-width:160px;">⏹ 完成</button>
     </div>`;
@@ -1108,7 +1170,11 @@ function startRecording() {
           const st = document.getElementById('recordingStatus');
           if (st) st.innerHTML = `
             <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0;">
-              <div style="font-size:1.2em;color:#0ea5e9;font-weight:bold;">⏳ ${_e(msg)}</div>
+              <div style="font-size:1.2em;color:#7c3aed;font-weight:bold;display:flex;align-items:center;gap:8px;">
+                <span style="display:inline-block;width:12px;height:12px;background:#7c3aed;border-radius:50%;animation:recbar-pulse 1.4s ease-in-out infinite;"></span>
+                ⏳ ${_e(msg)}
+              </div>
+              <div class="recbar"><div class="recbar-whisper"></div></div>
               <div style="font-size:0.85em;color:rgba(255,255,255,0.6);">下載 Whisper 模型約 40MB（首次使用），請耐心等候…</div>
               <button onclick="App._skipTranscribe()" style="background:#6b7280;font-size:0.95em;padding:8px 16px;border-radius:10px;color:#fff;min-height:42px;">⏭ 跳過等侯，直接去結果頁</button>
             </div>`;
