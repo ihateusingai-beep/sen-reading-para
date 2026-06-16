@@ -810,6 +810,12 @@ let _currentAudioBlob = null;
 // before the student has had a chance to even read the passage, hence
 // the "1 second auto-skip" UX bug.
 let _userExplicitlyStopped = false;
+// Flag set by the user from the "⏭ 跳過等侯" button on the transcribe
+// progress banner. Read inside the transcribe Promise to bail out of
+// slow CDN/model loads (e.g. Whisper first-use ~40MB download) and go
+// straight to a transcript-only result page. Module-scope so the
+// inline onclick="App._skipTranscribe()" handler can flip it.
+let _transcribeSkipRequested = false;
 // Last score context, used by the result page's "edit transcript" textbox
 // to live-rerender sub-scores + diff + fluency without re-recording. Set
 // inside scorePassage's render path, read by _rerenderWithTranscript.
@@ -1054,17 +1060,35 @@ function startRecording() {
         const blob = new Blob(chunks, { type: 'audio/webm' });
         _currentAudioBlob = blob;
         _currentRecorder = null;
+        // Engine-specific progress UI. Whisper needs ~40MB model download
+        // on first use (1-3 min) and then inference. Without a cancel
+        // button, a stuck transcribe (e.g. CDN blocked, ad-blocker
+        // intercepting) leaves the user staring at '⏳ 處理中…'
+        // forever — they have no way to abandon the recording. This
+        // banner with a manual-skip button gives them an exit.
+        const progressBanner = (msg) => {
+          status.innerHTML = `
+            <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0;">
+              <div style="font-size:1.2em;color:#0ea5e9;font-weight:bold;">⏳ ${_e(msg)}</div>
+              <div style="font-size:0.85em;color:rgba(255,255,255,0.6);">下載 Whisper 模型約 40MB（首次使用），請耐心等候…</div>
+              <button onclick="App._skipTranscribe()" style="background:#6b7280;font-size:0.95em;padding:8px 16px;border-radius:10px;color:#fff;min-height:42px;">⏭ 跳過等侯，直接去結果頁</button>
+            </div>`;
+        };
+        // Reset skip flag for this recording session.
+        _transcribeSkipRequested = false;
         try {
-          // 3-second watchdog for transcribe. If engine is a mock / unimpl
-          // (whisper pending model download) and transcribe never resolves,
-          // we still need to land on a result page.
+          // 8-second watchdog for transcribe. If the engine can't load
+          // the CDN or model within 8s, we surface a "skip" button so
+          // the user isn't stranded. The previous 3s was too aggressive
+          // for Whisper's first-time model download.
           let transcribeResult;
           try {
             transcribeResult = await Promise.race([
               engine.transcribe(blob, (progress) => {
-                status.innerHTML = '⏳ ' + (progress.message || '處理中…');
+                progressBanner(progress.message || '處理中…');
+                if (_transcribeSkipRequested) throw new Error('user-skipped');
               }),
-              new Promise((_, rej) => setTimeout(() => rej(new Error('transcribe timeout (3s)')), 3000))
+              new Promise((_, rej) => setTimeout(() => rej(new Error('transcribe timeout (8s)')), 8000))
             ]);
           } catch (transcribeErr) {
             console.warn('[onstop] transcribe failed/timed out:', transcribeErr.message);
@@ -1632,6 +1656,16 @@ function scorePassage(transcript, opts) {
 // the Web Speech API on the student's browser failed to transcribe
 // (e.g. macOS Chrome zh-HK backend unstable), since they can type what
 // they actually said and immediately see the score.
+// Skip the slow engine transcribe (e.g. Whisper first-time model
+// download) and go directly to a transcript-only result page. The user
+// invoked this from the progress banner's "⏭ 跳過等侯" button when
+// they got tired of waiting for the CDN/model load. The flag is read
+// by the onstop transcribe Promise.race's onProgress callback to bail.
+function _skipTranscribe() {
+  _transcribeSkipRequested = true;
+  showToast('⏭ 已跳過引擎等侯，去結果頁');
+}
+
 function _rerenderWithTranscript(editedTranscript) {
   const ctx = _lastScoreContext;
   if (!ctx) return;
@@ -4314,7 +4348,7 @@ window.App = {
   reAddDemoStudent, resetStudentProgress, selectEmoji, saveAdminSettings,
   // Assessment flow
   showPassageSelector, startAssessment, startPassageReading, startRecording, retryCurrentPassage,
-  scorePassage, _stopRecordingFromUI, _resultListen, _resultReplay, _rerenderWithTranscript,
+  scorePassage, _stopRecordingFromUI, _resultListen, _resultReplay, _rerenderWithTranscript, _skipTranscribe,
   _startWordRepractice, _repracticeListen, _repracticeRecord,
   // Cert + result
   showCertModal, closeCertModal, showConfetti,
