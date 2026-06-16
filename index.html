@@ -826,6 +826,9 @@ let _lastScoreContext = null;  // { target, passage, transcript, features, score
 function _stopRecordingFromUI() {
   // Instant visual feedback so the user doesn't think the page is frozen
   // (transcription + scoring takes 200ms-2s depending on engine).
+  // Re-query each time: the user may have navigated away and back, which
+  // would re-render assessmentContent and detach the previously-cached
+  // recordingStatus div.
   const status = document.getElementById('recordingStatus');
   if (status) {
     status.innerHTML = `
@@ -909,9 +912,28 @@ function startRecording() {
 
     try { recognition.start(); } catch (e) {
       console.error(e);
-      status.innerHTML = '❌ 無法啟動錄音，請檢查權限';
+      // Re-query status (closure-captured one may be detached).
+      const st = document.getElementById('recordingStatus');
+      if (st) st.innerHTML = '❌ 無法啟動錄音，請檢查權限';
       return;
     }
+    // Auto-abort watchdog. Chrome's internal no-speech timeout is
+    // 10-15s but unreliable across versions. If the user has been
+    // silent for 15s without producing a transcript, force-abort the
+    // recognition session so they aren't stranded on the 錄音中 status
+    // forever. Without this, onerror/onend can both fail to fire (e.g.
+    // Safari webkitSpeechRecognition partial impl) and the user has
+    // no way to abandon. The user can re-tap "開始朗讀" to start over.
+    setTimeout(() => {
+      if (_userExplicitlyStopped) return;  // user already finished
+      const st = document.getElementById('recordingStatus');
+      const onResult = st && st.innerHTML.includes('你讀咗：');
+      if (onResult) return;  // already produced a result
+      try { recognition.abort(); } catch (e) {}
+      if (st && (st.innerHTML.includes('錄音中') || st.innerHTML.includes('⏳'))) {
+        st.innerHTML = '⏱ 錄音超時（15 秒無語音輸入），請再試一次';
+      }
+    }, 15000);
 
     // Parallel MediaRecorder capture for webspeech engine. Web Speech API
     // gives us the transcript but no audio data, so fluency/expression
@@ -951,7 +973,15 @@ function startRecording() {
 
     recognition.onresult = (event) => {
       const transcript = event.results[0][0].transcript.trim();
-      status.innerHTML = `你讀咗：${_e(transcript)}`;
+      // Re-query the status element: the closure-captured `status` may
+      // point to a detached DOM node if the user navigated away from
+      // the assessment page mid-recording (e.g. via back button) and
+      // the assessmentContent was re-rendered, replacing the
+      // recordingStatus div. Without this re-query, status.innerHTML
+      // writes go to the detached element and the user sees no
+      // feedback — looks like a silent hang.
+      const st = document.getElementById('recordingStatus');
+      if (st) st.innerHTML = `你讀咗：${_e(transcript)}`;
       // The parallel MediaRecorder's onstop may run AFTER onresult
       // (recognition.stop() + recorder.stop() in _stopRecordingFromUI
       //  fire onresult synchronously, but onstop is async). Poll up to
@@ -1004,7 +1034,10 @@ function startRecording() {
       // to give up on this recording, they can hit the back button to
       // pick a different passage — we no longer trap them on the result
       // page with a forced 0 score.
-      status.innerHTML = `
+      // Re-query the status element (closure-captured one may be
+      // detached if the user navigated during recording).
+      const st = document.getElementById('recordingStatus');
+      if (st) st.innerHTML = `
         <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0;">
           <div style="font-size:1.1em;color:#ef4444;font-weight:bold;">${msg}</div>
           <div style="font-size:0.85em;color:rgba(255,255,255,0.6);">你可以再撳下面掣重試，或揀過另一篇文章。</div>
@@ -1020,7 +1053,10 @@ function startRecording() {
       // (which fires ~1s after start on macOS with unstable zHK backend)
       // would trigger fallback → scorePassage → navigate → "1 second
       // auto-skip" UX bug.
-      const alreadyScored = status.innerHTML.startsWith('你讀咗：');
+      // Re-query status: closure-captured one may be detached if user
+      // navigated during recording.
+      const st = document.getElementById('recordingStatus');
+      const alreadyScored = st ? st.innerHTML.startsWith('你讀咗：') : true;
       if (alreadyScored) return;  // onresult already handled this
       if (!_userExplicitlyStopped) {
         // Browser auto-ended without user input. Just leave the recording
@@ -1034,7 +1070,7 @@ function startRecording() {
       if (p) {
         _fallbackScore('end');
       } else {
-        status.innerHTML = `錄音結束 — 冇收到語音。撳「🎤 讀一次」重試，或撳「📖 其他文章 →」揀別篇。`;
+        if (st) st.innerHTML = `錄音結束 — 冇收到語音。撳「🎤 讀一次」重試，或撳「📖 其他文章 →」揀別篇。`;
       }
     };
   } else {
@@ -1067,7 +1103,10 @@ function startRecording() {
         // forever — they have no way to abandon the recording. This
         // banner with a manual-skip button gives them an exit.
         const progressBanner = (msg) => {
-          status.innerHTML = `
+          // Re-query status: closure-captured one may be detached if user
+          // navigated during recording.
+          const st = document.getElementById('recordingStatus');
+          if (st) st.innerHTML = `
             <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0;">
               <div style="font-size:1.2em;color:#0ea5e9;font-weight:bold;">⏳ ${_e(msg)}</div>
               <div style="font-size:0.85em;color:rgba(255,255,255,0.6);">下載 Whisper 模型約 40MB（首次使用），請耐心等候…</div>
@@ -1095,14 +1134,16 @@ function startRecording() {
             transcribeResult = { text: '', error: transcribeErr.message };
           }
           const result = transcribeResult || { text: '' };
+          // Re-query status: closure-captured one may be detached.
+          const st = document.getElementById('recordingStatus');
           // If engine returned text, score it. If empty (mock/whisper not
           // implemented, or timeout), fall through to the custom/manual path.
           if (result.text) {
-            status.innerHTML = `你讀咗：${_e(result.text)}`;
+            if (st) st.innerHTML = `你讀咗：${_e(result.text)}`;
             scorePassage(result.text, { engine: engine.id, audioBlob: blob, raw: result.raw });
           } else {
             if (engine.id === 'custom') {
-              status.innerHTML = '🎤 自訂模式：分析聲音特徵中…';
+              if (st) st.innerHTML = '🎤 自訂模式：分析聲音特徵中…';
               let customScore;
               try {
                 customScore = await _customScoreAudio(blob, state.currentPassage);
@@ -1112,7 +1153,7 @@ function startRecording() {
               // Whisper / engine that returned no text: STILL go to result
               // page with a fallback 0 score + helpful note. The old path
               // prompted for manual input, which could be skipped or hang.
-              status.innerHTML = `⚠️ ${engine.name} 未能識別 — 跳到結果頁。`;
+              if (st) st.innerHTML = `⚠️ ${engine.name} 未能識別 — 跳到結果頁。`;
               scorePassage('', { engine: engine.id, audioBlob: blob, noSpeech: true });
             }
           }
@@ -1128,7 +1169,9 @@ function startRecording() {
       _currentRecorder.start();
       // No auto-stop: student finishes when ready and taps "完成".
     }).catch(err => {
-      status.innerHTML = '❌ 麥克風權限被拒：' + err.message;
+      // Re-query status (closure-captured one may be detached).
+      const st = document.getElementById('recordingStatus');
+      if (st) st.innerHTML = '❌ 麥克風權限被拒：' + err.message;
     });
   }
 }
