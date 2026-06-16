@@ -796,6 +796,10 @@ function startPassageReading(passage) {
 let recognition;
 let _currentRecorder = null;
 let _currentAudioBlob = null;
+// Last score context, used by the result page's "edit transcript" textbox
+// to live-rerender sub-scores + diff + fluency without re-recording. Set
+// inside scorePassage's render path, read by _rerenderWithTranscript.
+let _lastScoreContext = null;  // { target, passage, transcript, features, scoreResult, audioBlob }
 
 // "Stop recording" trigger from the in-recording UI button.
 // Works for both Web Speech (recognition.stop()) and MediaRecorder (recorder.stop()).
@@ -1457,9 +1461,26 @@ function scorePassage(transcript, opts) {
     try { _renderFluencyPanel({ charCount: 0, duration: 0, longPauses: 0, cps: 0 }, { valid: false }); } catch(e) { console.warn(e); }
     try { _renderWordRetryList([], p); } catch(e) { console.warn(e); }
     document.getElementById('resultAI').innerHTML = `
-      <div style="margin-bottom:6px;"><b>你讀：</b>${_e(transcript || '（無收到語音）')}</div>
+      <div data-you-read style="margin-bottom:6px;"><b>你讀：</b>${_e(transcript || '（無收到語音）')}</div>
       <div style="margin-bottom:6px;"><b>文章：</b>${_e(target)}</div>
-      <div style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜原因：${_e(reason || 'engine error')}</div>`;
+      <div style="margin-bottom:10px;">
+        <label style="font-size:0.85em;color:#6b21a8;font-weight:bold;display:block;margin-bottom:4px;">
+          ✏️ 輸入你讀咗咩（即時重新計分）：
+        </label>
+        <textarea id="transcriptEdit" rows="3" style="width:100%;padding:8px;border:1px solid #c4b5fd;border-radius:8px;font-family:inherit;font-size:0.95em;box-sizing:border-box;resize:vertical;"
+          placeholder="如果語音辨識失敗或者你想重新輸入，喺呢度打你實際讀出嚟嘅字，sub-score 同 diff 會即時更新。"
+          oninput="App._rerenderWithTranscript(this.value)"
+        >${_e(transcript || '')}</textarea>
+      </div>
+      <div data-engine-line style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜原因：${_e(reason || 'engine error')}</div>`;
+    // Save the score context so the textarea's oninput handler can re-render
+    // sub-scores as the user types. Fallback path has no features (audioBlob
+    // was empty or pipeline failed), so the helper handles features.valid=false
+    // by skipping the fluency panel re-render.
+    _lastScoreContext = {
+      target, passage: p, transcript, features: { valid: false },
+      audioBlob: opts.audioBlob || null, passageType: p.type
+    };
   }
 
   // Inner pipeline
@@ -1504,10 +1525,28 @@ function scorePassage(transcript, opts) {
       _renderFluencyPanel(scoreResult.fluencyMeta, features);
       _renderWordRetryList(scoreResult.wrongChars, p);
 
+      // Stash the score context so the transcript-edit textbox below can
+      // live-rerender without re-recording. The audio features are kept
+      // verbatim so fluency/expression stay stable across edits (only
+      // accuracy/coverage/filler will move based on the new transcript).
+      _lastScoreContext = {
+        target, passage: p, transcript, features, scoreResult,
+        audioBlob: opts.audioBlob || null, passageType: p.type
+      };
+
       document.getElementById('resultAI').innerHTML = `
-        <div style="margin-bottom:6px;"><b>你讀：</b>${_e(transcript || '（自訂模式）')}</div>
+        <div data-you-read style="margin-bottom:6px;"><b>你讀：</b>${_e(transcript || '（自訂模式）')}</div>
         <div style="margin-bottom:6px;"><b>文章：</b>${_e(target)}</div>
-        <div style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜方法：${_e(scoringMethod)}</div>`;
+        <div style="margin-bottom:10px;">
+          <label style="font-size:0.85em;color:#6b21a8;font-weight:bold;display:block;margin-bottom:4px;">
+            ✏️ 編輯你讀嘅內容（即時重新計分）：
+          </label>
+          <textarea id="transcriptEdit" rows="3" style="width:100%;padding:8px;border:1px solid #c4b5fd;border-radius:8px;font-family:inherit;font-size:0.95em;box-sizing:border-box;resize:vertical;"
+            placeholder="如果語音辨識結果唔啱，喺呢度改你實際讀出嚟嘅字，sub-score 同 diff 會即時更新。"
+            oninput="App._rerenderWithTranscript(this.value)"
+          >${_e(transcript || '')}</textarea>
+        </div>
+        <div data-engine-line style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜方法：${_e(scoringMethod)}</div>`;
 
       if (scoreResult.total >= SCORING.TIER_GOLD) showConfetti(15);
     } catch (e) {
@@ -1522,6 +1561,48 @@ function scorePassage(transcript, opts) {
     showToast('❌ 處理失敗，已跳到結果頁。');
     _renderFallbackResult(p, transcript, opts, '引擎錯誤：' + e.message);
   });
+}
+
+// Live-rerender result page after the user edits the transcript textbox.
+// Re-runs _computePassageScore with the new transcript, keeping the same
+// audio features (so fluency/expression don't change unless the new
+// transcript alters their inputs), and updates sub-scores + diff +
+// fluency panel + word retry list. Does NOT call _recordPassageAttempt
+// again — the original attempt stays in history; the edit is just a
+// visual recalibration so the student can see "if I had actually said
+// that, my score would be X". This makes the system useful even when
+// the Web Speech API on the student's browser failed to transcribe
+// (e.g. macOS Chrome zh-HK backend unstable), since they can type what
+// they actually said and immediately see the score.
+function _rerenderWithTranscript(editedTranscript) {
+  const ctx = _lastScoreContext;
+  if (!ctx) return;
+  const cleanTranscript = (editedTranscript || '').trim();
+  const scoreResult = _computePassageScore(
+    ctx.target, cleanTranscript, ctx.features, ctx.passageType
+  );
+  // Update the main total + tier display
+  document.getElementById('resultScore').textContent = scoreResult.total + '/100';
+  const tier = _tierFromScore(scoreResult.total);
+  document.getElementById('resultScore').style.color = tier.color;
+  // Re-render sub-scores, diff highlight, word retry list
+  _renderSubScores(scoreResult.sub);
+  _renderDiffHighlight(ctx.target, scoreResult.align, cleanTranscript);
+  _renderWordRetryList(scoreResult.wrongChars, ctx.passage);
+  // Fluency panel: only re-render if we have features (audio-derived dims)
+  if (ctx.features && ctx.features.valid) {
+    _renderFluencyPanel(scoreResult.fluencyMeta, ctx.features);
+  }
+  // Update the AI box transcript line so the "你讀" line stays in sync
+  const aiEl = document.getElementById('resultAI');
+  if (aiEl) {
+    const engineLine = aiEl.querySelector('[data-engine-line]');
+    // Leave engine/method line untouched; just refresh the "你讀" line
+    const youReadLine = aiEl.querySelector('[data-you-read]');
+    if (youReadLine) {
+      youReadLine.innerHTML = `<b>你讀：</b>${_e(cleanTranscript || '（未輸入）')}`;
+    }
+  }
 }
 
 function _renderSubScores(sub) {
@@ -4161,7 +4242,7 @@ window.App = {
   reAddDemoStudent, resetStudentProgress, selectEmoji, saveAdminSettings,
   // Assessment flow
   showPassageSelector, startAssessment, startPassageReading, startRecording, retryCurrentPassage,
-  scorePassage, _stopRecordingFromUI, _resultListen, _resultReplay,
+  scorePassage, _stopRecordingFromUI, _resultListen, _resultReplay, _rerenderWithTranscript,
   _startWordRepractice, _repracticeListen, _repracticeRecord,
   // Cert + result
   showCertModal, closeCertModal, showConfetti,
