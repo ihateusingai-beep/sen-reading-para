@@ -1505,13 +1505,24 @@ function scorePassage(transcript, opts) {
     document.getElementById('resultAI').innerHTML = `
       <div data-you-read style="margin-bottom:6px;"><b>你讀：</b>${_e(transcript || '（無收到語音）')}</div>
       <div style="margin-bottom:6px;"><b>文章：</b>${_e(target)}</div>
+      ${transcript ? '' : `
+        <div style="background:#fef3c7;border:2px solid #f59e0b;border-radius:10px;padding:12px;margin-bottom:10px;text-align:left;">
+          <div style="font-size:1.0em;color:#92400e;font-weight:bold;margin-bottom:6px;">⚠️ 語音辨識失敗</div>
+          <div style="font-size:0.85em;color:#78350f;line-height:1.4;">
+            Chrome 內部嘅粵語辨識引擎喺你部機 / Chrome 版本上面冇回應 (常見於 macOS Chrome + zh-HK)。
+            請喺下面輸入你實際讀咗咩，sub-score 同 diff 會即時更新。
+            <br>💡 <b>長遠建議</b>：去 Settings 揀 Whisper 引擎（需下載 40MB 模型）可避免此問題。
+          </div>
+        </div>
+      `}
       <div style="margin-bottom:10px;">
         <label style="font-size:0.85em;color:#6b21a8;font-weight:bold;display:block;margin-bottom:4px;">
           ✏️ 輸入你讀咗咩（即時重新計分）：
         </label>
-        <textarea id="transcriptEdit" rows="3" style="width:100%;padding:8px;border:1px solid #c4b5fd;border-radius:8px;font-family:inherit;font-size:0.95em;box-sizing:border-box;resize:vertical;"
+        <textarea id="transcriptEdit" rows="3" style="width:100%;padding:8px;border:2px solid #c4b5fd;border-radius:8px;font-family:inherit;font-size:0.95em;box-sizing:border-box;resize:vertical;${transcript ? '' : 'box-shadow:0 0 0 3px rgba(196,181,253,0.3);'}"
           placeholder="如果語音辨識失敗或者你想重新輸入，喺呢度打你實際讀出嚟嘅字，sub-score 同 diff 會即時更新。"
           oninput="App._rerenderWithTranscript(this.value)"
+          ${transcript ? '' : 'autofocus'}
         >${_e(transcript || '')}</textarea>
       </div>
       <div data-engine-line style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜原因：${_e(reason || 'engine error')}</div>`;
@@ -1583,9 +1594,10 @@ function scorePassage(transcript, opts) {
           <label style="font-size:0.85em;color:#6b21a8;font-weight:bold;display:block;margin-bottom:4px;">
             ✏️ 編輯你讀嘅內容（即時重新計分）：
           </label>
-          <textarea id="transcriptEdit" rows="3" style="width:100%;padding:8px;border:1px solid #c4b5fd;border-radius:8px;font-family:inherit;font-size:0.95em;box-sizing:border-box;resize:vertical;"
+          <textarea id="transcriptEdit" rows="3" style="width:100%;padding:8px;border:1px solid #c4b5fd;border-radius:8px;font-family:inherit;font-size:0.95em;box-sizing:border-box;resize:vertical;${transcript ? '' : 'border:2px solid #c4b5fd;box-shadow:0 0 0 3px rgba(196,181,253,0.3);'}"
             placeholder="如果語音辨識結果唔啱，喺呢度改你實際讀出嚟嘅字，sub-score 同 diff 會即時更新。"
             oninput="App._rerenderWithTranscript(this.value)"
+            ${transcript ? '' : 'autofocus'}
           >${_e(transcript || '')}</textarea>
         </div>
         <div data-engine-line style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜方法：${_e(scoringMethod)}</div>`;
