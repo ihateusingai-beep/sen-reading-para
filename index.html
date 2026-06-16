@@ -1143,9 +1143,22 @@ function startRecording() {
     }
     navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
       _currentRecorder = new MediaRecorder(stream);
+      const rec = _currentRecorder;  // capture for closure
       const chunks = [];
       _currentRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-      _currentRecorder.onstop = async () => {
+      _currentRecorder.onstop = async function() {
+        // CRITICAL: must be a `function` (not arrow) so `this` is the
+        // MediaRecorder instance, not the enclosing lexical scope.
+        // The stale-fire guard below compares `this` against
+        // `_currentRecorder` to filter out callbacks from a previous
+        // recording session that the user already abandoned. If we
+        // used an arrow function here, `this` would be `window` (the
+        // enclosing scope's this) and the guard would always trigger,
+        // making the entire onstop body a no-op. Result: audioBlob
+        // never gets set, transcribe never runs, the 5s scorePassage
+        // watchdog fires, the result page's audioBlob-dependent
+        // sub-scores stay null, and the user sees a permanent
+        // "⏳ 處理中…" with no navigation to the result page.
         // Guard against double-fire: if 完成 is tapped twice (e.g. SEN
         // student re-tapping before the first tap's async transcribe has
         // returned), both stop() calls land on the same MediaRecorder
