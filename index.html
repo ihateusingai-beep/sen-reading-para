@@ -354,7 +354,11 @@ let state = {
   students: [],
   progress: {},       // { [studentId]: progressObj }
   // ASR engine selection (pluggable)
-  asrEngine: 'webspeech',  // 'webspeech' | 'whisper' | 'custom'
+  // Default = 'whisper' (transformers.js local ASR, real Cantonese support,
+  // not subject to Chrome macOS Web Speech API + zh-HK backend failure).
+  // Users can switch back to 'webspeech' in Settings, but on first use the
+  // Whisper model (~40MB) downloads once and is cached.
+  asrEngine: 'whisper',  // 'webspeech' | 'whisper' | 'custom'
   // Recording timeout (seconds). null = unlimited; student taps "完成" when done.
   recordingTimeout: null
 };
@@ -2263,7 +2267,20 @@ async function init() {
 
   const savedEngine = localStorage.getItem('yueAsrEngine');
   if (savedEngine && _ASR_ENGINES[savedEngine]) {
-    state.asrEngine = savedEngine;
+    // Migration: if the user had 'webspeech' saved from before 32c552d's
+    // default-to-whisper change, silently upgrade them. Web Speech API
+    // has a known failure mode on macOS Chrome (zh-HK backend unstable,
+    // mic mutex blocks parallel MediaRecorder) that produces empty
+    // transcripts and zero audio features. Whisper is a real Cantonese
+    // ASR with internal MediaRecorder that doesn't hit these issues.
+    // Users can still switch back in Settings if they prefer Web Speech.
+    if (savedEngine === 'webspeech' && _ASR_ENGINES.whisper.isAvailable()) {
+      state.asrEngine = 'whisper';
+      localStorage.removeItem('yueAsrEngine');
+      setTimeout(() => showToast('🔄 已升級到 Whisper 引擎（粵語支援更穩定）'), 1500);
+    } else {
+      state.asrEngine = savedEngine;
+    }
   }
 
   // Recording is unlimited; legacy yueRecordingTimeout no longer used.
@@ -2304,8 +2321,9 @@ async function init() {
       } catch(e) { /* ignore */ }
     }
     if (e.key === 'yueAsrEngine' && !e.newValue) {
-      // External clear — fall back to default
-      state.asrEngine = 'webspeech';
+      // External clear — fall back to default (whisper, since webspeech
+      // has known zHK backend issues on macOS Chrome)
+      state.asrEngine = 'whisper';
     } else if (e.key === 'yueAsrEngine' && e.newValue && _ASR_ENGINES[e.newValue]) {
       state.asrEngine = e.newValue;
     }
