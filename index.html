@@ -796,6 +796,16 @@ function startPassageReading(passage) {
 let recognition;
 let _currentRecorder = null;
 let _currentAudioBlob = null;
+// Set to true only when the student explicitly tapped the "⏹ 完成" button
+// (i.e. _stopRecordingFromUI ran). Used to gate the recognition onend
+// / onerror fallback paths so we don't auto-jump to the result page when
+// the browser internally auto-stops the recognition session (e.g. Chrome
+// macOS zHK backend unstable: starts the session, ~1s later auto-ends
+// without ever firing onresult). Before this flag, that auto-end would
+// trigger _fallbackScore → scorePassage → navigate to result page
+// before the student has had a chance to even read the passage, hence
+// the "1 second auto-skip" UX bug.
+let _userExplicitlyStopped = false;
 // Last score context, used by the result page's "edit transcript" textbox
 // to live-rerender sub-scores + diff + fluency without re-recording. Set
 // inside scorePassage's render path, read by _rerenderWithTranscript.
@@ -825,6 +835,11 @@ function _stopRecordingFromUI() {
     });
   }
   try {
+    // Mark the user as the one who triggered the stop. This gates the
+    // recognition onend/onerror fallback paths below so Chrome's internal
+    // auto-end (e.g. macOS zHK backend unstable, no-speech) doesn't kick
+    // the user out to the result page mid-recording.
+    _userExplicitlyStopped = true;
     if (typeof recognition !== 'undefined' && recognition) {
       try { recognition.stop(); } catch(e) {}
     }
@@ -838,6 +853,11 @@ function startRecording() {
   const status = document.getElementById('recordingStatus');
   const engine = _ASR_ENGINES[state.asrEngine] || _ASR_ENGINES.webspeech;
   const passage = state.currentPassage;
+  // Reset the explicit-stop flag for this recording session. Without this
+  // reset, a previous session's "⏹ 完成" tap (which set the flag) would
+  // permanently enable the fallback, so the first Chrome auto-end of the
+  // NEW session would also fire scorePassage prematurely.
+  _userExplicitlyStopped = false;
   // No auto-stop: student finishes when ready, then taps "完成" button.
   state.recordingTimeout = null;
 
@@ -963,26 +983,48 @@ function startRecording() {
       else if (event.error === 'service-not-allowed') msg = '❌ 瀏覽器不支援，請用 Chrome';
       else if (event.error === 'aborted') msg = '❌ 已取消，請再試';
       else msg = '❌ 請大聲啲或換個安靜地方';
-      status.innerHTML = msg + ' — 跳到結果頁。';
-      // Schedule the fallback score. onend will fire next; whichever
-      // path runs first sets _recognitionScored and the other is a no-op.
-      setTimeout(() => _fallbackScore('error', msg), 600);
+      // Do NOT auto-trigger scorePassage here. Previously we had
+      // setTimeout(_fallbackScore, 600) which caused a "1 second auto
+      // skip to result page" bug: Chrome on macOS rejects the recognition
+      // session fast (e.g. mic permission still pending or zHK backend
+      // unavailable), the user sees a flash of error message, then 600ms
+      // later they're whisked to the result page before they had a chance
+      // to do anything. Instead: show the error inline + give the user a
+      // "🔄 再試一次" button so they can choose to retry. If they want
+      // to give up on this recording, they can hit the back button to
+      // pick a different passage — we no longer trap them on the result
+      // page with a forced 0 score.
+      status.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0;">
+          <div style="font-size:1.1em;color:#ef4444;font-weight:bold;">${msg}</div>
+          <div style="font-size:0.85em;color:rgba(255,255,255,0.6);">你可以再撳下面掣重試，或揀過另一篇文章。</div>
+          <button onclick="App.startRecording()" style="background:#0ea5e9;font-size:1em;padding:10px 18px;border-radius:10px;color:#fff;min-height:48px;">🔄 再試一次</button>
+        </div>`;
     };
     recognition.onend = () => {
-      // FALLBACK: onresult fires BEFORE onend if there was a result.
-      // If onresult never fired (no speech detected, aborted, etc.), we
-      // STILL need to call scorePassage so the user lands on the result
-      // page (with a 0 score) — not stranded on "⏳ 處理中…".
-      // _recognitionScored guard ensures only one fallback fires even if
-      // both onerror and onend try to recover.
+      // Only fire fallback if:
+      //  (a) onresult never fired (so we don't have a transcript yet)
+      //  (b) the user explicitly tapped "⏹ 完成" (so they're expecting
+      //      the result page navigation)
+      // Without _userExplicitlyStopped guard, Chrome's internal auto-end
+      // (which fires ~1s after start on macOS with unstable zHK backend)
+      // would trigger fallback → scorePassage → navigate → "1 second
+      // auto-skip" UX bug.
       const alreadyScored = status.innerHTML.startsWith('你讀咗：');
-      if (!alreadyScored) {
-        const p = state.currentPassage;
-        if (p) {
-          _fallbackScore('end');
-        } else {
-          status.innerHTML = `錄音結束 — 冇收到語音。撳「🎤 讀一次」重試，或撳「📖 其他文章 →」揀別篇。`;
-        }
+      if (alreadyScored) return;  // onresult already handled this
+      if (!_userExplicitlyStopped) {
+        // Browser auto-ended without user input. Just leave the recording
+        // status as-is (the error handler above already showed retry
+        // buttons if onerror fired; otherwise the original "🔴 錄音中" +
+        // "⏹ 完成" button is still there). The user can tap 完成 to
+        // explicitly end and trigger the scoring path.
+        return;
+      }
+      const p = state.currentPassage;
+      if (p) {
+        _fallbackScore('end');
+      } else {
+        status.innerHTML = `錄音結束 — 冇收到語音。撳「🎤 讀一次」重試，或撳「📖 其他文章 →」揀別篇。`;
       }
     };
   } else {
