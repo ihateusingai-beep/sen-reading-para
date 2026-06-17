@@ -9,11 +9,14 @@
 <script type="module">
   // Just expose the CDN URL as a hint. Actual dynamic import happens on first use.
   window.TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.5';
-  // Build stamp — bumped each deploy. Surfaced bottom-left as a 9px monospace
-  // text + injected into __debug.init event so users can verify they have
-  // the latest version (catches stale browser cache + GitHub Pages CDN cache).
+</script>
+<script>
+  // Build stamp — bumped each deploy. Defined here (NOT in the module
+  // script above) because module scripts are deferred and would run AFTER
+  // the main script's init(), leaving window.__BUILD_ID undefined when
+  // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'f8c9afe @ 2026-06-17 (recursion-fix)';
+  window.__BUILD_ID = 'ceea8f6 @ 2026-06-17 (build-stamp-fix)';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
