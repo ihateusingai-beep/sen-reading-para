@@ -563,6 +563,15 @@ const __debug = (() => {
     }
     return String(v);
   };
+  // FIX: capture originals BEFORE the override below, so add() can pipe to
+  // the real console. Without this, add() references the OVERRIDDEN
+  // console.error → console.error calls add() → add() calls console.error
+  // → infinite recursion → RangeError: Maximum call stack size exceeded.
+  // The recursion bug surfaced in production on 2026-06-17 when the debug
+  // panel itself became the source of the hang, after ~55s of bubbling.
+  const _origConsoleError = (typeof console !== 'undefined' && console.error) || function() {};
+  const _origConsoleWarn = (typeof console !== 'undefined' && console.warn) || function() {};
+  const _origConsoleLog = (typeof console !== 'undefined' && console.log) || function() {};
   const add = (level, event, data) => {
     if (!enabled) return;
     const entry = {
@@ -573,13 +582,17 @@ const __debug = (() => {
     };
     buf.push(entry);
     if (buf.length > MAX) buf.shift();
-    // Also pipe to real console for browser devtools viewing
-    const consoleFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
-    if (Array.isArray(data) && data.length > 1) {
-      consoleFn(`[debug ${entry.t}s] ${event}`, ...data);
-    } else {
-      consoleFn(`[debug ${entry.t}s] ${event}`, data);
-    }
+    // Pipe to the REAL console (not the overridden one).
+    const consoleFn = level === 'error' ? _origConsoleError
+                    : level === 'warn'  ? _origConsoleWarn
+                    :                      _origConsoleLog;
+    try {
+      if (Array.isArray(data) && data.length > 1) {
+        consoleFn(`[debug ${entry.t}s] ${event}`, ...data);
+      } else {
+        consoleFn(`[debug ${entry.t}s] ${event}`, data);
+      }
+    } catch (e) { /* never let a debug log call crash the host app */ }
     // Throttled panel refresh (250ms)
     schedulePanelRefresh();
   };
@@ -593,14 +606,19 @@ const __debug = (() => {
     }, 250);
   };
   if (enabled && typeof window !== 'undefined') {
-    const origErr = console.error, origWarn = console.warn;
-    console.error = function(...a) { add('error', 'console.error', a); origErr.apply(console, a); };
-    console.warn = function(...a) { add('warn', 'console.warn', a); origWarn.apply(console, a); };
+    console.error = function(...a) {
+      try { add('error', 'console.error', a); } catch (e) { /* swallow debug-capture errors */ }
+      try { _origConsoleError.apply(console, a); } catch (e) { /* last-ditch swallow */ }
+    };
+    console.warn = function(...a) {
+      try { add('warn', 'console.warn', a); } catch (e) { /* swallow debug-capture errors */ }
+      try { _origConsoleWarn.apply(console, a); } catch (e) { /* last-ditch swallow */ }
+    };
     window.addEventListener('unhandledrejection', (e) => {
-      add('error', 'unhandledrejection', e.reason);
+      try { add('error', 'unhandledrejection', e.reason); } catch (err) {}
     });
     window.addEventListener('error', (e) => {
-      add('error', 'window.error', { message: e.message, filename: e.filename, lineno: e.lineno, colno: e.colno });
+      try { add('error', 'window.error', { message: e.message, filename: e.filename, lineno: e.lineno, colno: e.colno }); } catch (err) {}
     });
   }
   return {
