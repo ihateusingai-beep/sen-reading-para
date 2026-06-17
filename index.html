@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'no-cache-mic-timeout @ 2026-06-18';
+  window.__BUILD_ID = 'skip-grace-5s @ 2026-06-18';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -1528,11 +1528,35 @@ function startRecording() {
         // intercepting) leaves the user staring at '⏳ 處理中…'
         // forever — they have no way to abandon the recording. This
         // banner with a manual-skip button gives them an exit.
+        //
+        // Skip-grace design (2026-06-18):
+        // Production trace showed users clicking the skip button within
+        // 130ms of the banner appearing — the "⏭ 跳過等侯" button was
+        // visually too prominent and the "下載 40MB" hint made them panic.
+        // Result: a 4.76s recording got scored as "noSpeech: total=12"
+        // because the user skipped before inference even started.
+        //
+        // Fix: hide the skip button for the first 5 seconds. Cached
+        // model + WASM-warm inference completes in 2-5s, so most users
+        // never see the skip button at all and get a real score. Slow
+        // first-use (5-15s typical) users see the button appear after
+        // the cache hit window has passed — by then they have real
+        // feedback that inference is actively working, and clicking
+        // skip is an informed choice not a panic reflex.
+        const __SKIP_BUTTON_GRACE_MS = 5000;
+        const __inferenceStartMs = Date.now();
+        const __isSkipButtonVisible = () =>
+          (Date.now() - __inferenceStartMs) >= __SKIP_BUTTON_GRACE_MS;
         const progressBanner = (msg) => {
           // Re-query status: closure-captured one may be detached if user
           // navigated during recording.
           const st = document.getElementById('recordingStatus');
-          if (st) st.innerHTML = `
+          if (!st) return;
+          const skipVisible = __isSkipButtonVisible();
+          const skipBlock = skipVisible
+            ? `<button onclick="App._skipTranscribe()" style="background:#4b5563;font-size:0.9em;padding:7px 14px;border-radius:10px;color:#fff;min-height:40px;opacity:0.85;">⏭ 放棄等侯，手動輸入 transcript</button>`
+            : `<div style="font-size:0.8em;color:rgba(255,255,255,0.45);font-style:italic;">⏭ 跳過掣將於 5 秒後出現</div>`;
+          st.innerHTML = `
             <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0;">
               <div style="font-size:1.2em;color:#7c3aed;font-weight:bold;display:flex;align-items:center;gap:8px;">
                 <span style="display:inline-block;width:12px;height:12px;background:#7c3aed;border-radius:50%;animation:recbar-pulse 1.4s ease-in-out infinite;"></span>
@@ -1540,11 +1564,28 @@ function startRecording() {
               </div>
               <div class="recbar"><div class="recbar-whisper"></div></div>
               <div style="font-size:0.85em;color:rgba(255,255,255,0.6);">下載 Whisper 模型約 40MB（首次使用），請耐心等候…</div>
-              <button onclick="App._skipTranscribe()" style="background:#6b7280;font-size:0.95em;padding:8px 16px;border-radius:10px;color:#fff;min-height:42px;">⏭ 跳過等侯，直接去結果頁</button>
+              ${skipBlock}
             </div>`;
         };
         // Reset skip flag for this recording session.
         _transcribeSkipRequested = false;
+        // Re-render the banner once the skip-button grace period ends so
+        // the button actually appears (the first onProgress may fire
+        // before the 5s mark, painting the banner without the button).
+        setTimeout(() => {
+          // Only re-render if we're still in the inference phase (i.e.
+          // the banner is still showing the progress UI, not the result
+          // page or an error state). Cheap heuristic: re-query status and
+          // check that it still has the ⏳ marker.
+          const st = document.getElementById('recordingStatus');
+          if (st && st.innerHTML.includes('⏳') && !st.innerHTML.includes('放棄等侯')) {
+            // Extract current message from existing banner; fallback to
+            // a generic label if parsing fails.
+            const m = st.innerHTML.match(/⏳ ([^<]+)/);
+            const currentMsg = m ? m[1].trim() : '處理中…';
+            progressBanner(currentMsg);
+          }
+        }, __SKIP_BUTTON_GRACE_MS);
         // FIX (Bug B + C): External 12s watchdog + 200ms skip poller.
         // The inner 8s Promise.race timeout is the FIRST layer of defense
         // — it relies on the engine actually rejecting (or the re-throw
