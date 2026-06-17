@@ -3,6 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Aggressive no-cache: force browser to re-fetch on every load.
+     Without this, Chrome + GitHub Pages CDN cache the file for ~10min,
+     and the browser disk cache can hold it much longer. We deploy fixes
+     in tight loops and need users to always see the latest version
+     (build stamp visible bottom-left confirms which build is live). -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>朗讀評分 — 散文・詩詞</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E📖%3C/text%3E%3C/svg%3E">
 <!-- Transformers.js for on-device Whisper ASR (lazy loaded) -->
@@ -16,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'whisper-timeout-bump @ 2026-06-17 (30s race)';
+  window.__BUILD_ID = 'no-cache-mic-timeout @ 2026-06-18';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -1450,7 +1458,28 @@ function startRecording() {
       return;
     }
     __debug.mark('getUserMedia.start');
+    // Race getUserMedia against a 5s timeout. If the user denied mic
+    // permission, blocked the prompt, or the OS mic mutex is held by
+    // another app (e.g. Zoom), getUserMedia hangs forever with no
+    // feedback. Without this timeout, the user sees "🔴 錄音中"
+    // and a non-responsive 完成 button — they don't know what's wrong.
+    // 5s is generous for normal mic-grant flow (sub-second typical).
+    const __gumTimeout = setTimeout(() => {
+      __debug.warn('getUserMedia.timeout.5s', { msg: 'mic permission or device unavailable' });
+      const st = document.getElementById('recordingStatus');
+      if (st) st.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0;">
+          <div style="font-size:1.1em;color:#ef4444;font-weight:bold;">❌ 麥克風 5 秒內無回應</div>
+          <div style="font-size:0.85em;color:rgba(255,255,255,0.6);text-align:center;line-height:1.4;">
+            可能原因：瀏覽器冇彈 mic 權限 dialog、權限被 block、或其他 app 鎖住 mic。<br>
+            請去 Chrome 網址列左邊嘅 🔒 icon 確認 mic 權限為「允許」，然後重試。
+          </div>
+          <button onclick="App.startRecording()" style="background:#0ea5e9;font-size:1em;padding:10px 18px;border-radius:10px;color:#fff;min-height:48px;">🔄 再試一次</button>
+        </div>`;
+      showToast('❌ 麥克風無回應，檢查權限');
+    }, 5000);
     navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      clearTimeout(__gumTimeout);
       __debug.log('getUserMedia.then', { tracks: stream.getTracks().length, trackKinds: stream.getTracks().map(t => t.kind) });
       _currentRecorder = new MediaRecorder(stream);
       const rec = _currentRecorder;  // capture for closure
@@ -1643,6 +1672,7 @@ function startRecording() {
       }
       // No auto-stop: student finishes when ready and taps "完成".
     }).catch(err => {
+      clearTimeout(__gumTimeout);
       __debug.error('getUserMedia.catch', err);
       // Re-query status (closure-captured one may be detached).
       const st = document.getElementById('recordingStatus');
