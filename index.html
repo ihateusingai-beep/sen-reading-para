@@ -2838,7 +2838,7 @@ async function init() {
   // Mount the debug panel (no-op if debug mode is off). Done last so the
   // panel can capture any errors that happened earlier in init.
   __debug.log('init.done', {
-    build: __BUILD_ID,
+    build: window.__BUILD_ID,
     asrEngine: state.asrEngine,
     hasStudents: state.students.length,
     hasPassages: state.passages.length,
@@ -2849,7 +2849,7 @@ async function init() {
   const footerEl = document.createElement('div');
   footerEl.id = '__buildStamp';
   footerEl.style.cssText = 'position:fixed;bottom:2px;left:6px;font-family:ui-monospace,monospace;font-size:9px;color:rgba(255,255,255,0.35);z-index:99998;pointer-events:none;user-select:none;';
-  footerEl.textContent = __BUILD_ID;
+  footerEl.textContent = window.__BUILD_ID || 'build-unknown';
   document.body.appendChild(footerEl);
   if (typeof __debugRenderPanel === 'function') {
     try { __debugRenderPanel(); } catch (e) { console.warn('debug panel mount failed', e); }
