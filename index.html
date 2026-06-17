@@ -16,7 +16,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'ceea8f6 @ 2026-06-17 (build-stamp-fix)';
+  window.__BUILD_ID = 'whisper-timeout-bump @ 2026-06-17 (30s race)';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -1538,10 +1538,10 @@ function startRecording() {
           }
         };
         const __onstopWatchdog = setTimeout(() => {
-          __debug.warn('onstop.watchdog12s', { msg: 'external watchdog fired' });
-          console.warn('[onstop] external watchdog 12s — forcing fallback');
-          __onstopSafeNavigate('⏰ 引擎等侯超時（12秒），已自動跳到結果頁');
-        }, 12000);
+          __debug.warn('onstop.watchdog35s', { msg: 'external watchdog fired' });
+          console.warn('[onstop] external watchdog 35s — forcing fallback');
+          __onstopSafeNavigate('⏰ 引擎等侯超時（35秒），已自動跳到結果頁');
+        }, 35000);
         const __onstopSkipPoll = setInterval(() => {
           if (_transcribeSkipRequested) {
             __debug.log('onstop.skipPolled', { skipFlag: true });
@@ -1550,10 +1550,24 @@ function startRecording() {
           }
         }, 200);
         try {
-          // 8-second watchdog for transcribe. If the engine can't load
-          // the CDN or model within 8s, we surface a "skip" button so
-          // the user isn't stranded. The previous 3s was too aggressive
-          // for Whisper's first-time model download.
+          // 30-second race timeout for the actual transcribe inference.
+          // Production evidence (2026-06-17 user trace): pipe() inference
+          // legitimately takes 7+ seconds for ~6s of audio on first use
+          // (WASM warmup + chunked stride processing). The previous 8s
+          // race was way too aggressive — it timed out before inference
+          // even started emitting results, dropping the user into a
+          // empty-transcript fallback when the model was actually working.
+          // The user-visible cost is: "score = 12" on what should have
+          // been a real score.
+          //
+          // Why 30s, not 60s:
+          //   - On a cached model + WASM-warm second run: inference
+          //     completes in 2-5s.
+          //   - On first-use WASM compile + model download: 5-15s
+          //     typical, up to 25s on slow devices.
+          //   - Beyond 30s the user has already given up mentally; better
+          //     to land on the result page with a clear error than to
+          //     make them stare at a spinner.
           __debug.mark('engine.transcribe.start');
           let transcribeResult;
           try {
@@ -1564,9 +1578,9 @@ function startRecording() {
                 if (_transcribeSkipRequested) throw new Error('user-skipped');
               }),
               new Promise((_, rej) => setTimeout(() => {
-                __debug.warn('transcribe.race8s.timeout');
-                rej(new Error('transcribe timeout (8s)'));
-              }, 8000))
+                __debug.warn('transcribe.race30s.timeout');
+                rej(new Error('transcribe timeout (30s)'));
+              }, 30000))
             ]);
             __debug.mark('engine.transcribe.end');
             __debug.log('transcribe.resolved', { text: transcribeResult?.text?.substring(0, 60), textLen: transcribeResult?.text?.length });
