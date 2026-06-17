@@ -581,7 +581,19 @@ const _ASR_ENGINES = {
         };
       } catch (e) {
         console.error('Whisper transcribe error:', e);
-        return { text: '', confidence: 0, raw: { error: e.message, engineId: 'whisper' } };
+        // FIX: re-throw with context (do NOT swallow into { text: '' }).
+        // Production bug history: the previous swallow made the caller's
+        // Promise.race 8s timeout unreliable — Promise.race only fires on
+        // the first REJECT, so swallowing turned a hang into a permanent
+        // resolve-with-empty-text, which then dropped through to the
+        // no-speech fallback (good) but ALSO meant the inner transcribe
+        // pipeline kept running for the full import/pipe duration in the
+        // background, leaving the user stranded on "⏳ 處理中…" with no
+        // navigation in cases where the engine never reached its first
+        // onProgress callback. Re-throwing surfaces the failure to the
+        // caller so the 8s race can win + the 12s external watchdog (in
+        // onstop) can bail out if even the race fails.
+        throw new Error(`Whisper: ${e.message}`);
       }
     }
   },
@@ -1194,6 +1206,36 @@ function startRecording() {
         };
         // Reset skip flag for this recording session.
         _transcribeSkipRequested = false;
+        // FIX (Bug B + C): External 12s watchdog + 200ms skip poller.
+        // The inner 8s Promise.race timeout is the FIRST layer of defense
+        // — it relies on the engine actually rejecting (or the re-throw
+        // fix in whisper.transcribe propagating). But if a different
+        // engine path or an in-pipeline WASM loop hangs without rejecting,
+        // we still need a guarantee that the user lands on the result
+        // page. The 200ms skip poller also fixes Bug C: the previous
+        // design only checked _transcribeSkipRequested inside the
+        // onProgress callback, which never fires if the engine is stuck
+        // BEFORE its first progress update (e.g. import() blocked
+        // without ever reaching the stage change that fires the
+        // onProgress({ stage: 'cdn-load' }) call).
+        let __onstopResolved = false;
+        const __onstopSafeNavigate = (reason) => {
+          if (__onstopResolved) return;
+          __onstopResolved = true;
+          if (state.currentPassage) {
+            scorePassage('', { engine: engine.id, audioBlob: blob, noSpeech: true, errorMsg: reason });
+          }
+        };
+        const __onstopWatchdog = setTimeout(() => {
+          console.warn('[onstop] external watchdog 12s — forcing fallback');
+          __onstopSafeNavigate('⏰ 引擎等侯超時（12秒），已自動跳到結果頁');
+        }, 12000);
+        const __onstopSkipPoll = setInterval(() => {
+          if (_transcribeSkipRequested) {
+            console.log('[onstop] user skipped — forcing fallback');
+            __onstopSafeNavigate('⏭ 用戶跳過等侯');
+          }
+        }, 200);
         try {
           // 8-second watchdog for transcribe. If the engine can't load
           // the CDN or model within 8s, we surface a "skip" button so
@@ -1212,6 +1254,10 @@ function startRecording() {
             console.warn('[onstop] transcribe failed/timed out:', transcribeErr.message);
             transcribeResult = { text: '', error: transcribeErr.message };
           }
+          // If the external watchdog or skip-poller already navigated,
+          // don't double-render. The scorePassage('') inside safeNavigate
+          // has its own 5s watchdog so we're covered either way.
+          if (__onstopResolved) return;
           const result = transcribeResult || { text: '' };
           // Re-query status: closure-captured one may be detached.
           const st = document.getElementById('recordingStatus');
@@ -1240,9 +1286,12 @@ function startRecording() {
           // Outer catch (very rare — should not happen now that inner has
           // its own try/catch). Stay safe: navigate to fallback result.
           console.error('[onstop] outer error:', e);
-          if (state.currentPassage) {
-            scorePassage('', { engine: engine.id, audioBlob: blob, noSpeech: true });
+          if (state.currentPassage && !__onstopResolved) {
+            scorePassage('', { engine: engine.id, audioBlob: blob, noSpeech: true, errorMsg: '引擎錯誤：' + e.message });
           }
+        } finally {
+          clearTimeout(__onstopWatchdog);
+          clearInterval(__onstopSkipPoll);
         }
       };
       _currentRecorder.start();
@@ -1631,7 +1680,7 @@ function scorePassage(transcript, opts) {
   const watchdog = setTimeout(() => {
     watchdogFired = true;
     console.warn('[score] watchdog fired after 5s — forcing fallback result');
-    _renderFallbackResult(p, transcript, opts, '⏰ 處理超時，已自動跳到結果頁。');
+    _renderFallbackResult(p, transcript, opts, opts.errorMsg || '⏰ 處理超時，已自動跳到結果頁。');
   }, 5000);
 
   // Helper: navigate to result with whatever sub-render data we have.
