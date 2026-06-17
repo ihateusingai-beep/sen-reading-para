@@ -496,6 +496,242 @@ function _migrateIfNeeded() {
   localStorage.setItem(_SCHEMA_VERSION_KEY, String(_SCHEMA_VERSION));
 }
 
+// ================== DEBUG OVERLAY ==================
+// Enable via:
+//   1. URL param:  ?debug=1              (also persists to localStorage)
+//   2. localStorage: yueDebug = "1"
+//   3. Settings tab → ⚙️ 系統 → 🐛 Debug mode toggle (UI added below)
+//
+// When enabled, the module:
+//   - Captures console.error / console.warn / unhandledrejection / window.error
+//   - Records explicit __debug.log/warn/error calls at critical points
+//     (recording start/stop, MediaRecorder events, transcribe pipeline,
+//     scorePassage, fallback navigation)
+//   - Shows a floating bottom-right panel with collapsible history
+//   - Adds a 🐛 DEBUG badge next to the engine indicator on the hub
+//   - "Copy" button copies the full trace as text for bug reports
+//
+// Design notes:
+//   - Capture starts BEFORE the SPA init runs, so we can catch any
+//     load-time errors that would otherwise disappear (e.g. showConfirm
+//     missing → App namespace abort pre-2026-06).
+//   - Non-serializable values (Error, Blob, HTMLElement) are flattened
+//     so JSON.stringify in the copy flow doesn't drop them.
+//   - Buffer is capped at 500 entries; oldest are dropped first.
+const __debug = (() => {
+  let enabled = false;
+  try {
+    const u = new URL(location.href);
+    if (u.searchParams.get('debug') === '1') {
+      localStorage.setItem('yueDebug', '1');
+      enabled = true;
+    } else if (u.searchParams.get('debug') === '0') {
+      localStorage.removeItem('yueDebug');
+      enabled = false;
+    } else {
+      enabled = localStorage.getItem('yueDebug') === '1';
+    }
+  } catch (e) { enabled = false; }
+  const buf = [];
+  const MAX = 500;
+  const startTime = Date.now();
+  const sanitize = (v) => {
+    if (v == null) return v;
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
+    if (v instanceof Error) {
+      return { __type: 'Error', name: v.name, message: v.message, stack: (v.stack || '').split('\n').slice(0, 4).join(' | ') };
+    }
+    if (v instanceof Blob) {
+      return { __type: 'Blob', size: v.size, mimeType: v.type };
+    }
+    if (v instanceof HTMLElement) {
+      return { __type: 'Element', tag: v.tagName, id: v.id, class: v.className };
+    }
+    if (v instanceof MediaStream || (v && v.getTracks)) {
+      return { __type: 'MediaStream', tracks: (v.getTracks ? v.getTracks().length : 0) };
+    }
+    if (v && v.constructor && v.constructor.name === 'MediaRecorder') {
+      return { __type: 'MediaRecorder', state: v.state, mimeType: v.mimeType };
+    }
+    if (Array.isArray(v)) return v.map(sanitize);
+    if (typeof v === 'object') {
+      const out = {};
+      for (const k of Object.keys(v)) {
+        try { out[k] = sanitize(v[k]); } catch (e) { out[k] = '[unreadable]'; }
+      }
+      return out;
+    }
+    return String(v);
+  };
+  const add = (level, event, data) => {
+    if (!enabled) return;
+    const entry = {
+      t: +((Date.now() - startTime) / 1000).toFixed(2),
+      level,
+      event,
+      data: data == null ? null : (Array.isArray(data) && data.length === 1 ? sanitize(data[0]) : sanitize(data))
+    };
+    buf.push(entry);
+    if (buf.length > MAX) buf.shift();
+    // Also pipe to real console for browser devtools viewing
+    const consoleFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
+    if (Array.isArray(data) && data.length > 1) {
+      consoleFn(`[debug ${entry.t}s] ${event}`, ...data);
+    } else {
+      consoleFn(`[debug ${entry.t}s] ${event}`, data);
+    }
+    // Throttled panel refresh (250ms)
+    schedulePanelRefresh();
+  };
+  let panelRefreshScheduled = false;
+  const schedulePanelRefresh = () => {
+    if (panelRefreshScheduled) return;
+    panelRefreshScheduled = true;
+    setTimeout(() => {
+      panelRefreshScheduled = false;
+      try { __debugRenderPanel(); } catch (e) { /* panel may not be mounted yet */ }
+    }, 250);
+  };
+  if (enabled && typeof window !== 'undefined') {
+    const origErr = console.error, origWarn = console.warn;
+    console.error = function(...a) { add('error', 'console.error', a); origErr.apply(console, a); };
+    console.warn = function(...a) { add('warn', 'console.warn', a); origWarn.apply(console, a); };
+    window.addEventListener('unhandledrejection', (e) => {
+      add('error', 'unhandledrejection', e.reason);
+    });
+    window.addEventListener('error', (e) => {
+      add('error', 'window.error', { message: e.message, filename: e.filename, lineno: e.lineno, colno: e.colno });
+    });
+  }
+  return {
+    enabled: () => enabled,
+    setEnabled(v) {
+      enabled = !!v;
+      if (enabled) localStorage.setItem('yueDebug', '1');
+      else localStorage.removeItem('yueDebug');
+      schedulePanelRefresh();
+    },
+    log: (event, data) => add('log', event, data),
+    warn: (event, data) => add('warn', event, data),
+    error: (event, data) => add('error', event, data),
+    get: () => buf.slice(),
+    clear: () => { buf.length = 0; schedulePanelRefresh(); },
+    mark: (label) => add('log', `MARK: ${label}`, null)  // for performance.now() alignment
+  };
+})();
+
+// Render the floating debug panel (bottom-right). Idempotent — call any time
+// to re-render with the latest buffer. Hidden if debug mode is off.
+function __debugRenderPanel() {
+  if (!__debug.enabled()) return;
+  let panel = document.getElementById('__debugPanel');
+  const entries = __debug.get();
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = '__debugPanel';
+    panel.style.cssText = 'position:fixed;bottom:10px;right:10px;width:420px;max-height:55vh;background:rgba(10,10,20,0.94);color:#e5e7eb;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;border:2px solid #ef4444;border-radius:8px;z-index:99999;display:flex;flex-direction:column;box-shadow:0 8px 24px rgba(0,0,0,0.4);';
+    document.body.appendChild(panel);
+  }
+  // Sort newest first
+  const sorted = entries.slice().sort((a, b) => b.t - a.t);
+  const total = entries.length;
+  const errorCount = entries.filter(e => e.level === 'error').length;
+  const warnCount = entries.filter(e => e.level === 'warn').length;
+  const errorBadge = errorCount > 0 ? `<span style="background:#ef4444;color:#fff;padding:1px 6px;border-radius:10px;font-size:10px;">${errorCount}</span>` : '';
+  const warnBadge = warnCount > 0 ? `<span style="background:#f59e0b;color:#fff;padding:1px 6px;border-radius:10px;font-size:10px;margin-left:4px;">${warnCount}</span>` : '';
+  const body = panel.querySelector('.__debugBody') || document.createElement('div');
+  body.className = '__debugBody';
+  body.style.cssText = 'flex:1;overflow-y:auto;padding:6px 10px;';
+  if (sorted.length === 0) {
+    body.innerHTML = '<div style="color:#9ca3af;padding:8px;">(no events yet — try recording)</div>';
+  } else {
+    body.innerHTML = sorted.slice(0, 200).map(e => {
+      const color = e.level === 'error' ? '#fca5a5' : e.level === 'warn' ? '#fcd34d' : '#86efac';
+      const bgTint = e.level === 'error' ? 'rgba(239,68,68,0.08)' : e.level === 'warn' ? 'rgba(245,158,11,0.06)' : 'transparent';
+      const dataStr = e.data == null ? '' : JSON.stringify(e.data);
+      return `<div style="border-bottom:1px solid rgba(255,255,255,0.06);padding:3px 0;background:${bgTint};">
+        <span style="color:#6b7280;">[${e.t}s]</span>
+        <span style="color:${color};font-weight:bold;">${e.level.toUpperCase().padEnd(5)}</span>
+        <span style="color:#fff;">${_e(e.event)}</span>
+        ${dataStr ? `<div style="color:#cbd5e1;padding-left:16px;word-break:break-all;font-size:10px;max-height:60px;overflow:hidden;">${_e(dataStr.substring(0, 400))}${dataStr.length > 400 ? '…' : ''}</div>` : ''}
+      </div>`;
+    }).join('');
+  }
+  // Header
+  let header = panel.querySelector('.__debugHeader');
+  if (!header) {
+    header = document.createElement('div');
+    header.className = '__debugHeader';
+    header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:linear-gradient(90deg,#7c3aed,#ef4444);color:#fff;cursor:pointer;user-select:none;font-weight:bold;';
+    panel.appendChild(header);
+    panel.appendChild(body);
+  }
+  header.innerHTML = `
+    <span style="display:flex;align-items:center;gap:6px;">
+      🐛 DEBUG ${errorBadge}${warnBadge}
+      <span style="font-weight:normal;font-size:10px;opacity:0.8;">(${total})</span>
+    </span>
+    <span style="display:flex;gap:4px;">
+      <button onclick="event.stopPropagation();__debugCopyTrace(this)" style="background:#22c55e;color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:10px;">📋 Copy</button>
+      <button onclick="event.stopPropagation();__debugExportLog(this)" style="background:#0ea5e9;color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:10px;">💾 Log</button>
+      <button onclick="event.stopPropagation();__debug.clear();__debugRenderPanel()" style="background:#6b7280;color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:10px;">🗑</button>
+      <button onclick="event.stopPropagation();document.getElementById('__debugPanel').remove()" style="background:#dc2626;color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:10px;">×</button>
+    </span>
+  `;
+  header.onclick = () => { body.style.display = body.style.display === 'none' ? 'block' : 'none'; };
+}
+
+function __debugCopyTrace(btn) {
+  const entries = __debug.get();
+  const text = entries.map(e => `[${e.t}s] ${e.level.toUpperCase().padEnd(5)} ${e.event}` + (e.data != null ? ' ' + JSON.stringify(e.data) : '')).join('\n');
+  const done = (ok) => {
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = ok ? '✓ Copied' : '✗ Failed';
+      setTimeout(() => { btn.textContent = orig; }, 1200);
+    }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => done(true)).catch(() => {
+      // Fallback
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(true); } catch (e) { done(false); }
+      document.body.removeChild(ta);
+    });
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(true); } catch (e) { done(false); }
+    document.body.removeChild(ta);
+  }
+}
+
+function __debugExportLog(btn) {
+  const entries = __debug.get();
+  const lines = [
+    `# yue-debug ${new Date().toISOString()}`,
+    `# url: ${location.href}`,
+    `# ua: ${navigator.userAgent}`,
+    `# asrEngine: ${(typeof _ASR_ENGINES !== 'undefined' && _ASR_ENGINES[state?.asrEngine])?.name || state?.asrEngine || 'unknown'}`,
+    ''
+  ];
+  for (const e of entries) {
+    lines.push(`[${e.t}s] ${e.level.toUpperCase().padEnd(5)} ${e.event}` + (e.data != null ? ' ' + JSON.stringify(e.data) : ''));
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `yue-debug-${Date.now()}.log`;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+  if (btn) {
+    const orig = btn.textContent;
+    btn.textContent = '✓ Saved';
+    setTimeout(() => { btn.textContent = orig; }, 1200);
+  }
+}
+
 // ================== ASR ENGINE LAYER ==================
 // Each engine implements: { id, name, transcribe(audioBlob?) → Promise<{text, confidence, raw}>, isAvailable() }
 // Score is computed uniformly after transcribe (Levenshtein-based) — no per-engine scoring.
@@ -535,37 +771,62 @@ const _ASR_ENGINES = {
     _pipeline: null,
     _pipelineLoading: null,
     async _ensurePipeline(onProgress) {
-      if (this._pipeline) return this._pipeline;
-      if (this._pipelineLoading) return this._pipelineLoading;
+      if (this._pipeline) {
+        __debug.log('whisper._ensurePipeline.cached', {});
+        return this._pipeline;
+      }
+      if (this._pipelineLoading) {
+        __debug.log('whisper._ensurePipeline.inFlight', {});
+        return this._pipelineLoading;
+      }
+      const cdnUrl = window.TRANSFORMERS_CDN;
+      const t0 = performance.now();
+      __debug.log('whisper._ensurePipeline.start', { cdnUrl, webGPU: !!(typeof navigator !== 'undefined' && navigator.gpu) });
       this._pipelineLoading = (async () => {
-        if (onProgress) onProgress({ stage: 'cdn-load', message: '⏳ 載入 Transformers.js…' });
-        // Dynamic import — only loaded when first needed
-        const lib = await import(window.TRANSFORMERS_CDN);
-        if (onProgress) onProgress({ stage: 'model-load', message: '⏳ 下載 Whisper 模型（約 40MB，只需一次）…' });
-        const pipe = await lib.pipeline(
-          'automatic-speech-recognition',
-          'Xenova/whisper-tiny',
-          {
-            // q8 量化 — 適合 WASM
-            dtype: 'q8',
-            // Use WebGPU if available for speed; else fall back to WASM
-            device: typeof navigator !== 'undefined' && navigator.gpu ? 'webgpu' : 'wasm'
-          }
-        );
-        this._pipeline = pipe;
-        return pipe;
+        try {
+          if (onProgress) onProgress({ stage: 'cdn-load', message: '⏳ 載入 Transformers.js…' });
+          // Dynamic import — only loaded when first needed
+          __debug.mark('whisper.import.CDN');
+          const lib = await import(cdnUrl);
+          __debug.log('whisper.import.CDN.done', { ms: +(performance.now() - t0).toFixed(0), hasPipeline: typeof lib.pipeline });
+          if (onProgress) onProgress({ stage: 'model-load', message: '⏳ 下載 Whisper 模型（約 40MB，只需一次）…' });
+          __debug.mark('whisper.pipeline.create');
+          const pipe = await lib.pipeline(
+            'automatic-speech-recognition',
+            'Xenova/whisper-tiny',
+            {
+              // q8 量化 — 適合 WASM
+              dtype: 'q8',
+              // Use WebGPU if available for speed; else fall back to WASM
+              device: typeof navigator !== 'undefined' && navigator.gpu ? 'webgpu' : 'wasm'
+            }
+          );
+          __debug.log('whisper.pipeline.create.done', { ms: +(performance.now() - t0).toFixed(0), modelId: 'Xenova/whisper-tiny' });
+          this._pipeline = pipe;
+          return pipe;
+        } catch (e) {
+          __debug.error('whisper._ensurePipeline.fail', e);
+          // Reset so the next call retries instead of returning the cached rejection
+          this._pipelineLoading = null;
+          throw e;
+        }
       })();
       return this._pipelineLoading;
     },
     async transcribe(audioBlob, onProgress) {
+      __debug.log('whisper.transcribe.entry', { blobSize: audioBlob?.size, blobType: audioBlob?.type });
+      const t0 = performance.now();
       try {
         const pipe = await this._ensurePipeline(onProgress);
         if (onProgress) onProgress({ stage: 'preprocess', message: '⏳ 處理音訊…' });
         // Convert audioBlob to 16kHz mono Float32Array
+        __debug.mark('whisper._blobToFloat32.start');
         const audio = await _blobToFloat32(audioBlob);
+        __debug.log('whisper._blobToFloat32.done', { samples: audio.length, durationSec: +(audio.length / 16000).toFixed(2) });
         if (onProgress) onProgress({ stage: 'transcribe', message: '⏳ Whisper 識別中…' });
         // Cantonese: whisper doesn't have 'cantonese' code, but 'zh' works
         // (model is multilingual). Add language hint to bias toward Chinese.
+        __debug.mark('whisper.pipe.inference');
         const result = await pipe(audio, {
           language: 'chinese',  // closer to Cantonese than 'zh'
           task: 'transcribe',
@@ -573,6 +834,7 @@ const _ASR_ENGINES = {
           chunk_length_s: 30,
           stride_length_s: 5
         });
+        __debug.log('whisper.pipe.inference.done', { ms: +(performance.now() - t0).toFixed(0) });
         const text = (result && result.text) ? result.text.trim() : '';
         return {
           text,
@@ -581,6 +843,7 @@ const _ASR_ENGINES = {
         };
       } catch (e) {
         console.error('Whisper transcribe error:', e);
+        __debug.error('whisper.transcribe.fail', e);
         // FIX: re-throw with context (do NOT swallow into { text: '' }).
         // Production bug history: the previous swallow made the caller's
         // Promise.race 8s timeout unreliable — Promise.race only fires on
@@ -699,7 +962,8 @@ function goTo(page) {
       if (e.id === 'whisper') {
         extra = _ASR_ENGINES.whisper._pipeline ? '（已預載）' : '（首次需下載 ~40MB）';
       }
-      ind.textContent = `🎙 評估引擎：${e.name} ${e.privacyEmoji}${extra}`;
+      const debugBadge = __debug.enabled() ? ' <span style="color:#ef4444;font-weight:bold;">🐛 DEBUG</span>' : '';
+      ind.innerHTML = `🎙 評估引擎：${e.name} ${e.privacyEmoji}${extra}${debugBadge}`;
     }
   }
 }
@@ -923,13 +1187,17 @@ function _stopRecordingFromUI() {
     // auto-end (e.g. macOS zHK backend unstable, no-speech) doesn't kick
     // the user out to the result page mid-recording.
     _userExplicitlyStopped = true;
+    __debug.log('stopFromUI', { recognitionActive: !!(typeof recognition !== 'undefined' && recognition), recState: _currentRecorder?.state, recMIME: _currentRecorder?.mimeType });
     if (typeof recognition !== 'undefined' && recognition) {
-      try { recognition.stop(); } catch(e) {}
+      try { recognition.stop(); } catch(e) { __debug.warn('stopFromUI.recognition.stop.fail', e); }
     }
     if (_currentRecorder && _currentRecorder.state === 'recording') {
+      __debug.mark('MR.stop()');
       _currentRecorder.stop();
+    } else {
+      __debug.warn('stopFromUI.noActiveRecorder', { state: _currentRecorder?.state, isNull: _currentRecorder == null });
     }
-  } catch(e) { console.warn('stop from UI failed', e); }
+  } catch(e) { console.warn('stop from UI failed', e); __debug.error('stopFromUI.outerCatch', e); }
 }
 
 function startRecording() {
@@ -943,8 +1211,10 @@ function startRecording() {
   _userExplicitlyStopped = false;
   // No auto-stop: student finishes when ready, then taps "完成" button.
   state.recordingTimeout = null;
+  __debug.log('startRecording', { engine: engine.id, engineName: engine.name, passageId: passage?.id, passageTitle: passage?.title, available: engine.isAvailable() });
 
   if (!engine.isAvailable()) {
+    __debug.warn('startRecording.engineUnavailable', { engine: engine.id });
     status.innerHTML = '❌ 此裝置唔支援 ' + engine.name;
     return;
   }
@@ -1153,12 +1423,21 @@ function startRecording() {
       status.innerHTML = '❌ 此瀏覽器不支援錄音';
       return;
     }
+    __debug.mark('getUserMedia.start');
     navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      __debug.log('getUserMedia.then', { tracks: stream.getTracks().length, trackKinds: stream.getTracks().map(t => t.kind) });
       _currentRecorder = new MediaRecorder(stream);
       const rec = _currentRecorder;  // capture for closure
       const chunks = [];
-      _currentRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      _currentRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunks.push(e.data);
+          __debug.log('MR.ondataavailable', { size: e.data.size, chunkCount: chunks.length });
+        }
+      };
       _currentRecorder.onstop = async function() {
+        __debug.mark('onstop.fire');
+        __debug.log('onstop.entry', { thisIsRec: this === _currentRecorder, _currentRecorderIsRec: _currentRecorder === rec, recState: this?.state, chunkCount: chunks.length });
         // CRITICAL: must be a `function` (not arrow) so `this` is the
         // MediaRecorder instance, not the enclosing lexical scope.
         // The stale-fire guard below compares `this` against
@@ -1178,11 +1457,16 @@ function startRecording() {
         // is disabled in _stopRecordingFromUI but a queued click event
         // can still land. Without this guard: 2 history records, double
         // confetti, and double progress write.
-        if (_currentRecorder !== this) return;
+        if (_currentRecorder !== this) {
+          __debug.warn('onstop.staleFireGuard', { thisIsRec: this === rec, _currentRecorderIsRec: _currentRecorder === rec });
+          return;
+        }
+        __debug.log('onstop.guardPassed', { recState: this?.state, recMime: this?.mimeType });
         stream.getTracks().forEach(t => t.stop());
         const blob = new Blob(chunks, { type: 'audio/webm' });
         _currentAudioBlob = blob;
         _currentRecorder = null;
+        __debug.log('onstop.blobCreated', { blobSize: blob.size, blobType: blob.type });
         // Engine-specific progress UI. Whisper needs ~40MB model download
         // on first use (1-3 min) and then inference. Without a cancel
         // button, a stuck transcribe (e.g. CDN blocked, ad-blocker
@@ -1222,16 +1506,19 @@ function startRecording() {
         const __onstopSafeNavigate = (reason) => {
           if (__onstopResolved) return;
           __onstopResolved = true;
+          __debug.log('onstop.safeNavigate', { reason });
           if (state.currentPassage) {
             scorePassage('', { engine: engine.id, audioBlob: blob, noSpeech: true, errorMsg: reason });
           }
         };
         const __onstopWatchdog = setTimeout(() => {
+          __debug.warn('onstop.watchdog12s', { msg: 'external watchdog fired' });
           console.warn('[onstop] external watchdog 12s — forcing fallback');
           __onstopSafeNavigate('⏰ 引擎等侯超時（12秒），已自動跳到結果頁');
         }, 12000);
         const __onstopSkipPoll = setInterval(() => {
           if (_transcribeSkipRequested) {
+            __debug.log('onstop.skipPolled', { skipFlag: true });
             console.log('[onstop] user skipped — forcing fallback');
             __onstopSafeNavigate('⏭ 用戶跳過等侯');
           }
@@ -1241,16 +1528,24 @@ function startRecording() {
           // the CDN or model within 8s, we surface a "skip" button so
           // the user isn't stranded. The previous 3s was too aggressive
           // for Whisper's first-time model download.
+          __debug.mark('engine.transcribe.start');
           let transcribeResult;
           try {
             transcribeResult = await Promise.race([
               engine.transcribe(blob, (progress) => {
+                __debug.log('transcribe.progress', { stage: progress.stage, message: progress.message });
                 progressBanner(progress.message || '處理中…');
                 if (_transcribeSkipRequested) throw new Error('user-skipped');
               }),
-              new Promise((_, rej) => setTimeout(() => rej(new Error('transcribe timeout (8s)')), 8000))
+              new Promise((_, rej) => setTimeout(() => {
+                __debug.warn('transcribe.race8s.timeout');
+                rej(new Error('transcribe timeout (8s)'));
+              }, 8000))
             ]);
+            __debug.mark('engine.transcribe.end');
+            __debug.log('transcribe.resolved', { text: transcribeResult?.text?.substring(0, 60), textLen: transcribeResult?.text?.length });
           } catch (transcribeErr) {
+            __debug.warn('transcribe.rejected', { message: transcribeErr.message, name: transcribeErr.name });
             console.warn('[onstop] transcribe failed/timed out:', transcribeErr.message);
             transcribeResult = { text: '', error: transcribeErr.message };
           }
@@ -1265,6 +1560,7 @@ function startRecording() {
           // implemented, or timeout), fall through to the custom/manual path.
           if (result.text) {
             if (st) st.innerHTML = `你讀咗：${_e(result.text)}`;
+            __debug.log('onstop.scorePath.text', { transcriptLen: result.text.length });
             scorePassage(result.text, { engine: engine.id, audioBlob: blob, raw: result.raw });
           } else {
             if (engine.id === 'custom') {
@@ -1273,18 +1569,21 @@ function startRecording() {
               try {
                 customScore = await _customScoreAudio(blob, state.currentPassage);
               } catch (e) { customScore = { score: 0, error: e.message }; }
+              __debug.log('onstop.scorePath.custom', { score: customScore.score });
               scorePassage('', { engine: 'custom', customScore, audioBlob: blob });
             } else {
               // Whisper / engine that returned no text: STILL go to result
               // page with a fallback 0 score + helpful note. The old path
               // prompted for manual input, which could be skipped or hang.
               if (st) st.innerHTML = `⚠️ ${engine.name} 未能識別 — 跳到結果頁。`;
+              __debug.log('onstop.scorePath.noSpeech', { engine: engine.id, error: result.error });
               scorePassage('', { engine: engine.id, audioBlob: blob, noSpeech: true });
             }
           }
         } catch (e) {
           // Outer catch (very rare — should not happen now that inner has
           // its own try/catch). Stay safe: navigate to fallback result.
+          __debug.error('onstop.outerCatch', e);
           console.error('[onstop] outer error:', e);
           if (state.currentPassage && !__onstopResolved) {
             scorePassage('', { engine: engine.id, audioBlob: blob, noSpeech: true, errorMsg: '引擎錯誤：' + e.message });
@@ -1294,9 +1593,17 @@ function startRecording() {
           clearInterval(__onstopSkipPoll);
         }
       };
-      _currentRecorder.start();
+      __debug.mark('MR.start()');
+      try {
+        _currentRecorder.start();
+        __debug.log('MR.start.done', { state: _currentRecorder.state, mimeType: _currentRecorder.mimeType });
+      } catch (startErr) {
+        __debug.error('MR.start.fail', startErr);
+        throw startErr;
+      }
       // No auto-stop: student finishes when ready and taps "完成".
     }).catch(err => {
+      __debug.error('getUserMedia.catch', err);
       // Re-query status (closure-captured one may be detached).
       const st = document.getElementById('recordingStatus');
       if (st) st.innerHTML = '❌ 麥克風權限被拒：' + err.message;
@@ -1665,8 +1972,10 @@ function scorePassage(transcript, opts) {
   // forever (the previous implementation had no .catch on the inner promise).
   opts = opts || {};
   const p = state.currentPassage;
+  __debug.log('scorePassage.entry', { transcriptLen: (transcript || '').length, engine: opts.engine, noSpeech: !!opts.noSpeech, errorMsg: opts.errorMsg, hasAudioBlob: !!opts.audioBlob });
   if (!p) {
     // No passage context — should never happen, but stay safe.
+    __debug.warn('scorePassage.noPassage');
     showToast('❌ 錯誤：搵唔到當前文章');
     return;
   }
@@ -1679,6 +1988,7 @@ function scorePassage(transcript, opts) {
   let watchdogFired = false;
   const watchdog = setTimeout(() => {
     watchdogFired = true;
+    __debug.warn('scorePassage.watchdog5s', { errorMsg: opts.errorMsg });
     console.warn('[score] watchdog fired after 5s — forcing fallback result');
     _renderFallbackResult(p, transcript, opts, opts.errorMsg || '⏰ 處理超時，已自動跳到結果頁。');
   }, 5000);
@@ -1801,8 +2111,10 @@ function scorePassage(transcript, opts) {
         </div>
         <div data-engine-line style="font-size:0.85em;color:#7c3aed;">引擎：${_e(opts.engine || state.asrEngine)}｜方法：${_e(scoringMethod)}</div>`;
 
+      __debug.log('scorePassage.rendered', { total: scoreResult.total, scoringMethod, subKeys: Object.keys(scoreResult.sub || {}) });
       if (scoreResult.total >= SCORING.TIER_GOLD) showConfetti(15);
     } catch (e) {
+      __debug.error('scorePassage.render.fail', e);
       console.error('[score] render failed:', e);
       showToast('❌ 評分出錯，已跳到結果頁。');
       _renderFallbackResult(p, transcript, opts, '評分錯誤：' + e.message);
@@ -2500,6 +2812,18 @@ async function init() {
   _renderStudentGrid();
   updateProgress();
 
+  // Mount the debug panel (no-op if debug mode is off). Done last so the
+  // panel can capture any errors that happened earlier in init.
+  __debug.log('init.done', {
+    asrEngine: state.asrEngine,
+    hasStudents: state.students.length,
+    hasPassages: state.passages.length,
+    progressKeys: Object.keys(state.progress).length
+  });
+  if (typeof __debugRenderPanel === 'function') {
+    try { __debugRenderPanel(); } catch (e) { console.warn('debug panel mount failed', e); }
+  }
+
   // Multi-tab sync: when another tab writes to localStorage, refresh our
   // in-memory state and re-render the visible dashboard. This is the
   // use case where a teacher has the dashboard tab open and the student
@@ -2658,7 +2982,10 @@ function tchSwitchTab(tab) {
   if (tab === 'dashboard') renderTeacherDashboard();
   if (tab === 'students') renderTeacherStudents();
   if (tab === 'edit') renderTeacherEdit();
-  if (tab === 'settings') renderTeacherSettings();
+  if (tab === 'settings') {
+    renderTeacherSettings();
+    if (typeof _updateDebugToggleUI === 'function') _updateDebugToggleUI();
+  }
 }
 
 function renderTeacherDashboard() {
@@ -2734,6 +3061,16 @@ function renderTeacherSettings() {
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">🔧 進階</p>
       <button onclick="App.clearAudioBaselines()" style="background:#dc2626;width:100%;font-size:0.95em;padding:10px;min-height:44px;">🗑 清除自訂引擎聲紋 baseline</button>
       <button onclick="App.resetTeacherPassword()" style="background:#f59e0b;width:100%;font-size:0.95em;padding:10px;min-height:44px;margin-top:8px;">🔑 重設老師密碼</button>
+    </div>
+    <div style="background:rgba(239,68,68,0.08);border:2px solid rgba(239,68,68,0.4);border-radius:12px;padding:14px;margin-top:16px;">
+      <p style="font-weight:bold;color:#ef4444;margin-bottom:8px;">🐛 Debug 模式 <span id="debugModeBadge" style="font-size:0.7em;color:#9ca3af;font-weight:normal;">(關閉)</span></p>
+      <p style="color:rgba(255,255,255,0.7);font-size:0.9em;margin:0 0 10px 0;">
+        開啟後右下角會有浮動 panel 顯示錄音 pipeline 嘅 trace、console errors、unhandled rejection。<br>
+        適用於診斷 Whisper 載入 hang / score 失敗 / recording hang 等問題。production 環境建議保持關閉。
+      </p>
+      <button id="debugToggleBtn" onclick="App.toggleDebugMode()" style="width:100%;background:#ef4444;font-size:0.95em;padding:10px;min-height:44px;">
+        開啟 Debug
+      </button>
     </div>
   `;
   renderAsrEngineList();
@@ -4506,6 +4843,42 @@ function resetToDefaultPassages() {
   });
 }
 
+// ================== DEBUG TOGGLE (UI) ==================
+// Called from the Settings tab 🐛 button. Persists to localStorage
+// (same key the URL param uses) so the user can disable debug mode
+// without the ?debug=1 URL.
+function toggleDebugMode() {
+  const newVal = !__debug.enabled();
+  __debug.setEnabled(newVal);
+  __debug.log('toggleDebugMode', { enabled: newVal });
+  if (newVal) {
+    __debugRenderPanel();
+    showToast('🐛 Debug 模式已開啟 — 右下角 panel');
+  } else {
+    const panel = document.getElementById('__debugPanel');
+    if (panel) panel.remove();
+    showToast('🐛 Debug 模式已關閉');
+  }
+  _updateDebugToggleUI();
+}
+
+function _updateDebugToggleUI() {
+  const btn = document.getElementById('debugToggleBtn');
+  const badge = document.getElementById('debugModeBadge');
+  if (!btn || !badge) return;
+  if (__debug.enabled()) {
+    btn.textContent = '🔴 關閉 Debug';
+    btn.style.background = '#22c55e';
+    badge.textContent = '(開啟中)';
+    badge.style.color = '#22c55e';
+  } else {
+    btn.textContent = '🐛 開啟 Debug';
+    btn.style.background = '#ef4444';
+    badge.textContent = '(關閉)';
+    badge.style.color = '#9ca3af';
+  }
+}
+
 // ================== PUBLIC API SURFACE ==================
 // Single file-scope namespace for inline `onclick="App.fn()"` handlers.
 // Listing every top-level function explicitly so the App boundary is auditable
@@ -4540,7 +4913,9 @@ window.App = {
   // Reports
   exportStudentReport, exportClassReport,
   // Helpers
-  _e, _tierFromScore, _scoreColor, _sanitizeProgress, _migrateIfNeeded
+  _e, _tierFromScore, _scoreColor, _sanitizeProgress, _migrateIfNeeded,
+  // Debug
+  toggleDebugMode, _updateDebugToggleUI
 };
 // Kick off: start the SPA after the API surface is mounted.
 init();
