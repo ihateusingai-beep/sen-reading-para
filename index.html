@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'skip-grace-5s @ 2026-06-18';
+  window.__BUILD_ID = 'heartbeat-elapsed @ 2026-06-18';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -1529,38 +1529,61 @@ function startRecording() {
         // forever — they have no way to abandon the recording. This
         // banner with a manual-skip button gives them an exit.
         //
-        // Skip-grace design (2026-06-18):
-        // Production trace showed users clicking the skip button within
-        // 130ms of the banner appearing — the "⏭ 跳過等侯" button was
-        // visually too prominent and the "下載 40MB" hint made them panic.
-        // Result: a 4.76s recording got scored as "noSpeech: total=12"
-        // because the user skipped before inference even started.
+        // Skip-grace design (2026-06-18, revised heartbeat @ 2026-06-18):
+        // Original (skip-grace-5s) hid the skip button for 5s, but
+        // production trace (2026-06-18 22:51) still showed users being
+        // skipped at 22.51s — between 12.06s (transcribe stage set) and
+        // 22.51s (skip fired) there were ZERO progress events, just 10
+        // seconds of silent inference. User saw a banner that said
+        // "⏳ Whisper 識別中…" with no feedback for 10s, then clicked
+        // skip at 5s+ when the button appeared.
         //
-        // Fix: hide the skip button for the first 5 seconds. Cached
-        // model + WASM-warm inference completes in 2-5s, so most users
-        // never see the skip button at all and get a real score. Slow
-        // first-use (5-15s typical) users see the button appear after
-        // the cache hit window has passed — by then they have real
-        // feedback that inference is actively working, and clicking
-        // skip is an informed choice not a panic reflex.
-        const __SKIP_BUTTON_GRACE_MS = 5000;
+        // Revised design — 8s grace + 2s elapsed-time heartbeat:
+        //   - 8s grace: covers cached inference (2-5s) with margin;
+        //     first-use (5-15s) users can still skip but at 8s+ with
+        //     context.
+        //   - 2s heartbeat: re-paints the banner with live elapsed time
+        //     ("⏳ Whisper 識別中… (4s)") so the user sees the counter
+        //     tick up. This is the PRIMARY defense against panic-click:
+        //     a moving counter confirms the engine is alive during the
+        //     silent middle of whisper inference (transformers.js does
+        //     not emit intermediate progress between stage=transcribe
+        //     and the final result).
+        //   - Skip button label includes elapsed time when shown, so
+        //     "⏭ 放棄等侯 (9s)，手動輸入 transcript" is an informed
+        //     choice not a reflex.
+        //   - Countdown during grace ("跳過掣將於 3 秒後出現") gives
+        //     the user an expectation so they don't wonder when the
+        //     button will appear.
+        const __SKIP_BUTTON_GRACE_MS = 8000;
         const __inferenceStartMs = Date.now();
         const __isSkipButtonVisible = () =>
           (Date.now() - __inferenceStartMs) >= __SKIP_BUTTON_GRACE_MS;
+        const __formatElapsed = () =>
+          Math.floor((Date.now() - __inferenceStartMs) / 1000);
+        const __graceRemaining = () =>
+          Math.max(0, Math.ceil((__SKIP_BUTTON_GRACE_MS - (Date.now() - __inferenceStartMs)) / 1000));
+        // Track current progress message in a closure var so the
+        // heartbeat can re-paint with the latest label even when no new
+        // onProgress event has fired (e.g. during the silent middle of
+        // whisper inference).
+        let __currentProgressMessage = '處理中…';
         const progressBanner = (msg) => {
           // Re-query status: closure-captured one may be detached if user
           // navigated during recording.
           const st = document.getElementById('recordingStatus');
           if (!st) return;
+          __currentProgressMessage = msg;
           const skipVisible = __isSkipButtonVisible();
+          const elapsed = __formatElapsed();
           const skipBlock = skipVisible
-            ? `<button onclick="App._skipTranscribe()" style="background:#4b5563;font-size:0.9em;padding:7px 14px;border-radius:10px;color:#fff;min-height:40px;opacity:0.85;">⏭ 放棄等侯，手動輸入 transcript</button>`
-            : `<div style="font-size:0.8em;color:rgba(255,255,255,0.45);font-style:italic;">⏭ 跳過掣將於 5 秒後出現</div>`;
+            ? `<button onclick="App._skipTranscribe()" style="background:#4b5563;font-size:0.9em;padding:7px 14px;border-radius:10px;color:#fff;min-height:40px;opacity:0.85;">⏭ 放棄等侯 (${elapsed}s)，手動輸入 transcript</button>`
+            : `<div style="font-size:0.8em;color:rgba(255,255,255,0.45);font-style:italic;">⏭ 跳過掣將於 ${__graceRemaining()} 秒後出現</div>`;
           st.innerHTML = `
             <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:8px 0;">
               <div style="font-size:1.2em;color:#7c3aed;font-weight:bold;display:flex;align-items:center;gap:8px;">
                 <span style="display:inline-block;width:12px;height:12px;background:#7c3aed;border-radius:50%;animation:recbar-pulse 1.4s ease-in-out infinite;"></span>
-                ⏳ ${_e(msg)}
+                ⏳ ${_e(msg)} <span style="opacity:0.6;font-weight:normal;font-size:0.85em;">(${elapsed}s)</span>
               </div>
               <div class="recbar"><div class="recbar-whisper"></div></div>
               <div style="font-size:0.85em;color:rgba(255,255,255,0.6);">下載 Whisper 模型約 40MB（首次使用），請耐心等候…</div>
@@ -1569,23 +1592,21 @@ function startRecording() {
         };
         // Reset skip flag for this recording session.
         _transcribeSkipRequested = false;
-        // Re-render the banner once the skip-button grace period ends so
-        // the button actually appears (the first onProgress may fire
-        // before the 5s mark, painting the banner without the button).
-        setTimeout(() => {
-          // Only re-render if we're still in the inference phase (i.e.
-          // the banner is still showing the progress UI, not the result
-          // page or an error state). Cheap heuristic: re-query status and
-          // check that it still has the ⏳ marker.
+        // 2s heartbeat: re-paint the banner with live elapsed time so
+        // the user sees the counter tick up ("(4s)" → "(6s)" → "(8s)")
+        // during the silent middle of whisper inference. Cleared in
+        // the onstop finally block.
+        const __onstopHeartbeat = setInterval(() => {
           const st = document.getElementById('recordingStatus');
-          if (st && st.innerHTML.includes('⏳') && !st.innerHTML.includes('放棄等侯')) {
-            // Extract current message from existing banner; fallback to
-            // a generic label if parsing fails.
-            const m = st.innerHTML.match(/⏳ ([^<]+)/);
-            const currentMsg = m ? m[1].trim() : '處理中…';
-            progressBanner(currentMsg);
+          if (!st) return;
+          // Banner was replaced (transcribe resolved → "你讀咗: ..."
+          // or "⚠️ 未能識別"). Stop the heartbeat.
+          if (!st.innerHTML.includes('⏳')) {
+            clearInterval(__onstopHeartbeat);
+            return;
           }
-        }, __SKIP_BUTTON_GRACE_MS);
+          progressBanner(__currentProgressMessage);
+        }, 2000);
         // FIX (Bug B + C): External 12s watchdog + 200ms skip poller.
         // The inner 8s Promise.race timeout is the FIRST layer of defense
         // — it relies on the engine actually rejecting (or the re-throw
@@ -1701,6 +1722,7 @@ function startRecording() {
         } finally {
           clearTimeout(__onstopWatchdog);
           clearInterval(__onstopSkipPoll);
+          clearInterval(__onstopHeartbeat);
         }
       };
       __debug.mark('MR.start()');
