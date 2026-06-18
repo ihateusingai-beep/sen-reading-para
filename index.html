@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'click-replay @ 2026-06-18';
+  window.__BUILD_ID = 'tts-compare @ 2026-06-19';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -2325,6 +2325,133 @@ async function _analyzeAudioFeatures(blob, charCount) {
   }
 }
 
+// ================== SPRINT 3: TTS SIDE-BY-SIDE COMPARISON ==================
+// Per-passage pre-bundled Cantonese TTS audio (matrix MCP Cantonese_GentleLady
+// at speed 0.85). Bundled in data/tts/<passage-id>.mp3 at build time so the
+// user browser doesn't need a TTS API key (MCP TTS is Mavis-only). On click
+// of a target character: play user audio (Sprint 2) → chain the matching
+// TTS slice. Side-by-side: "我嘅版本" then "model 嘅版本" so the student can
+// self-correct on the spot — biggest learning ROI of any feature so far.
+//
+// Architecture reuses Sprint 2's silence-gap detector (_detectWordBoundaries)
+// + slice player (_playAudioSegment). One MP3 per passage contains the whole
+// text read at 0.85×; we run _buildUserTokenTimes over target-tokens to get
+// per-character time slices, then chain them after user audio ends.
+//
+// Graceful degradation: if the TTS file is missing (custom teacher-added
+// passage), the click handler just plays user audio — no TTS chain, no
+// error toast. To enable TTS for a custom passage, regenerate
+// data/tts/<id>.mp3 via matrix_batch_synthesize_speech and bump
+// TTS_CONFIG.version to bust the browser cache.
+const TTS_CONFIG = {
+  baseUrl: 'data/tts/',
+  version: 1                            // bump when regenerating TTS files
+};
+
+// Per-passage TTS cache (module-scope; reset on passage change).
+let _ttsAudioBuffer = null;             // AudioBuffer for current passage's TTS
+let _ttsTokenTimes = null;              // [{ startSec, endSec }] per target token
+let _ttsLoadedForId = null;             // passage.id that the buffer was loaded for
+let _ttsLoadingPromise = null;          // dedup concurrent loads
+let _ttsCurrentSource = null;           // active TTS source (separate from user source)
+// One-shot: which target idx's TTS to chain after the current user audio
+// ends naturally. Set by _playFromTargetToken, consumed by _playAudioSegment's
+// onended handler. Reset to -1 on a new click (no stale chain leaks across
+// rapid back-to-back clicks).
+let _pendingTtsChainIdx = -1;
+
+// Fetch + decode + index the TTS audio for a passage. Returns the cached
+// values on hit, fetches on miss, dedups concurrent calls. Resolves to
+// { audioBuffer, tokenTimes } on success or null on failure (file missing,
+// decode error, etc.). Never throws — failure is silent so user audio path
+// remains unaffected.
+async function _loadTtsForPassage(passage) {
+  if (!passage || !passage.id) return null;
+  // Same passage already loaded — reuse (don't re-fetch)
+  if (_ttsAudioBuffer && _ttsLoadedForId === passage.id) {
+    return { audioBuffer: _ttsAudioBuffer, tokenTimes: _ttsTokenTimes };
+  }
+  if (_ttsLoadingPromise) return _ttsLoadingPromise;
+  _ttsLoadingPromise = (async () => {
+    try {
+      const url = TTS_CONFIG.baseUrl + encodeURIComponent(passage.id) + '.mp3?v=' + TTS_CONFIG.version;
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        __debug.log('tts.miss', { passageId: passage.id, status: resp.status });
+        return null;
+      }
+      const arrayBuf = await resp.arrayBuffer();
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return null;
+      // Use a throwaway context for decoding (Sprint 2 pattern — decode on
+      // a short-lived ctx, then use the shared _replayAudioCtx for playback).
+      const decodeCtx = new AudioCtx();
+      const buf = await decodeCtx.decodeAudioData(arrayBuf.slice(0));
+      decodeCtx.close();
+      // Reuse the same _detectWordBoundaries + _buildUserTokenTimes that
+      // Sprint 2 uses for user audio. The result is one time-slice per
+      // target token in the passage.
+      const targetTokens = _tokenize(_normText(passage.text));
+      const regions = _detectWordBoundaries(buf);
+      const tokenTimes = _buildUserTokenTimes(targetTokens, regions, buf.duration);
+      // Free any previous passage's buffer (memory housekeeping)
+      _ttsAudioBuffer = null;
+      _ttsTokenTimes = null;
+      _ttsAudioBuffer = buf;
+      _ttsTokenTimes = tokenTimes;
+      _ttsLoadedForId = passage.id;
+      __debug.log('tts.loaded', { passageId: passage.id, dur: buf.duration, regions: regions.length, tokens: targetTokens.length });
+      return { audioBuffer: buf, tokenTimes };
+    } catch (e) {
+      console.warn('[tts] load failed', e);
+      return null;
+    } finally {
+      _ttsLoadingPromise = null;
+    }
+  })();
+  return _ttsLoadingPromise;
+}
+
+// Clear the TTS cache (e.g. on passage change or error). Does NOT stop any
+// in-flight TTS source — call _stopTts() first if needed.
+function _clearTtsCache() {
+  _ttsAudioBuffer = null;
+  _ttsTokenTimes = null;
+  _ttsLoadedForId = null;
+  _pendingTtsChainIdx = -1;
+}
+
+// Stop any in-flight TTS playback. Safe to call when nothing is playing.
+function _stopTts() {
+  if (_ttsCurrentSource) {
+    try { _ttsCurrentSource.stop(); } catch (e) {}
+    _ttsCurrentSource = null;
+  }
+}
+
+// Play a TTS slice from the cached TTS AudioBuffer. Tracks the source in
+// _ttsCurrentSource (separate from _replayCurrentSource) so user-audio
+// playback can stop TTS without touching its own tracker. Returns the
+// AudioBufferSourceNode (or null on failure / not-loaded).
+function _playTtsSegment(startSec, endSec) {
+  if (!_ttsAudioBuffer) return null;
+  const ctx = _getReplayAudioCtx();
+  if (!ctx) return null;
+  if (ctx.state === 'suspended') { ctx.resume().catch(() => {}); }
+  // Stop any in-flight TTS so successive clicks don't overlap (the user
+  // audio click handler also calls _stopTts() before this fires, but
+  // belt-and-suspenders in case TTS is triggered from elsewhere).
+  if (_ttsCurrentSource) { try { _ttsCurrentSource.stop(); } catch (e) {} _ttsCurrentSource = null; }
+  const dur = Math.max(0.05, endSec - startSec);
+  const src = ctx.createBufferSource();
+  src.buffer = _ttsAudioBuffer;
+  src.connect(ctx.destination);
+  src.start(0, Math.max(0, startSec), dur);
+  src.onended = () => { if (_ttsCurrentSource === src) _ttsCurrentSource = null; };
+  _ttsCurrentSource = src;
+  return src;
+}
+
 // ================== SPRINT 2: CLICK-TO-REPLAY (KILLER FEATURE) ==================
 // Decode a recorded audio Blob into an AudioBuffer for fast segment playback.
 // Returns null on decode failure (caller should disable click-replay).
@@ -2509,6 +2636,10 @@ function _getReplayAudioCtx() {
 // Play a slice of the audioBuffer from startSec to endSec. Auto-stops any
 // currently-playing segment so successive clicks don't overlap. Returns the
 // AudioBufferSourceNode (or null on failure).
+// Sprint 3: on natural end (when this source was the active one — not
+// interrupted by a new click), chain the TTS slice for the same target
+// index if a chain is pending. Interrupted ends do NOT chain — the new
+// click has already set its own _pendingTtsChainIdx.
 function _playAudioSegment(audioBuffer, startSec, endSec) {
   if (!audioBuffer) return null;
   const ctx = _getReplayAudioCtx();
@@ -2531,7 +2662,21 @@ function _playAudioSegment(audioBuffer, startSec, endSec) {
   src.connect(ctx.destination);
   src.start(0, Math.max(0, startSec), dur);
   src.onended = () => {
-    if (_replayCurrentSource === src) _replayCurrentSource = null;
+    // _replayCurrentSource === src means we ended naturally (no new click
+    // replaced us). If it doesn't match, we were stopped by a new click —
+    // the new click has already set its own chain, so don't trigger TTS.
+    if (_replayCurrentSource === src) {
+      _replayCurrentSource = null;
+      // Chain TTS if pending
+      if (_pendingTtsChainIdx >= 0 && _ttsAudioBuffer && _ttsTokenTimes && _ttsTokenTimes[_pendingTtsChainIdx]) {
+        const ttsIdx = _pendingTtsChainIdx;
+        _pendingTtsChainIdx = -1;
+        _playTtsSegment(_ttsTokenTimes[ttsIdx].startSec, _ttsTokenTimes[ttsIdx].endSec);
+      } else {
+        // No chain — clear pending so it doesn't leak to a future natural end
+        _pendingTtsChainIdx = -1;
+      }
+    }
   };
   _replayCurrentSource = src;
   return src;
@@ -2539,7 +2684,9 @@ function _playAudioSegment(audioBuffer, startSec, endSec) {
 
 // Click handler bound by _renderDiffHighlight: look up the audio slice for
 // this target-token-index and play it. For 'del' tokens (no user audio),
-// show a toast and skip playback.
+// show a toast and skip playback. Sprint 3: also chains the matching TTS
+// slice (Cantonese model voice) after the user audio ends, so the student
+// hears "我嗰刻" then "model 嗰個版本" of the same character back-to-back.
 function _playFromTargetToken(targetIdx) {
   const ctx = _lastScoreContext;
   if (!ctx || !ctx.audioBuffer || !ctx.targetIdxToTime) {
@@ -2551,6 +2698,14 @@ function _playFromTargetToken(targetIdx) {
     showToast('⏸ 漏咗讀 — 呢個字冇錄音');
     return;
   }
+  // Stop any in-flight TTS first so the chain restarts cleanly with the
+  // new target. Also reset the pending chain to this target — if the
+  // current user-audio is interrupted by an even-newer click, that new
+  // click will overwrite _pendingTtsChainIdx before this source's
+  // onended fires, so we won't accidentally chain the wrong TTS.
+  _stopTts();
+  _pendingTtsChainIdx = (_ttsAudioBuffer && _ttsTokenTimes && _ttsTokenTimes[targetIdx]) ? targetIdx : -1;
+  // Play user audio
   _playAudioSegment(ctx.audioBuffer, entry.time.startSec, entry.time.endSec);
   // Visual flash on the clicked span (best-effort — may be detached after rerender)
   const el = document.querySelector(`[data-replay-target-idx="${targetIdx}"]`);
@@ -2808,6 +2963,15 @@ function scorePassage(transcript, opts) {
           console.warn('[replay] setup failed', e);
         }
       }
+      // Sprint 3: pre-load the Cantonese TTS audio for this passage in the
+      // background. By the time the user clicks a diff span (a few seconds
+      // later at minimum — they're reading the score first), TTS is usually
+      // ready and the click chains model pronunciation immediately. If the
+      // TTS file is missing (custom teacher-added passage), the click handler
+      // degrades gracefully — user audio plays, no TTS chain, no error.
+      if (p && p.id) {
+        _loadTtsForPassage(p).catch(() => {});  // fire-and-forget; _loadTtsForPassage never throws
+      }
 
       // Stash the score context FIRST so _renderDiffHighlight can read
       // replay data and wire click handlers on the initial render.
@@ -3053,7 +3217,7 @@ function _renderDiffHighlight(target, align, transcript) {
     sessionStorage.setItem('yueReplayHintShown', '1');
     const hint = document.createElement('div');
     hint.style.cssText = 'margin-top:8px;padding:6px 10px;background:#ddd6fe;color:#5b21b6;border-radius:8px;font-size:0.82em;text-align:left;';
-    hint.innerHTML = '💡 <b>新功能：</b>撳任何「<span style="color:#16a34a;">啱</span> / <span style="color:#dc2626;text-decoration:line-through;">錯</span> / <span style="color:#6b7280;border-bottom:2px dotted #9ca3af;">漏</span> / <span style="background:#fef3c7;">多咗</span>」嘅字就會聽到嗰刻自己錄嘅音。';
+    hint.innerHTML = '💡 <b>新功能：</b>撳任何「<span style="color:#16a34a;">啱</span> / <span style="color:#dc2626;text-decoration:line-through;">錯</span> / <span style="color:#6b7280;border-bottom:2px dotted #9ca3af;">漏</span> / <span style="background:#fef3c7;">多咗</span>」嘅字就會聽到自己嗰刻錄嘅音，<b>仲會自動播埋標準粵語發音</b>畀你對比。';
     el.appendChild(hint);
   }
 }
