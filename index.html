@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'tts-compare @ 2026-06-19';
+  window.__BUILD_ID = 'mix-mode @ 2026-06-19';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -2360,6 +2360,27 @@ let _ttsCurrentSource = null;           // active TTS source (separate from user
 // rapid back-to-back clicks).
 let _pendingTtsChainIdx = -1;
 
+// Play mode for click-to-replay + TTS. Sprint 3 default is "chain" (user
+// audio first, then TTS on natural end). Sprint 4 adds "mix" — both play
+// simultaneously so the student can hear "my version" + "model version"
+// at the same time (better for matching/pronas difference comparison).
+// Persists in sessionStorage so the user's choice survives navigation
+// within the same tab session.
+let _playMode = (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('yueReplayMode')) || 'chain';
+function _setPlayMode(mode) {
+  if (mode !== 'chain' && mode !== 'mix') return _playMode;
+  _playMode = mode;
+  if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('yueReplayMode', mode);
+  // Update toggle button styling in place (no re-render needed)
+  document.querySelectorAll('[data-replay-mode]').forEach(btn => {
+    const isActive = btn.dataset.replayMode === mode;
+    btn.style.background = isActive ? '#7c3aed' : '#e5e7eb';
+    btn.style.color = isActive ? '#fff' : '#374151';
+    btn.style.fontWeight = isActive ? 'bold' : 'normal';
+  });
+  return _playMode;
+}
+
 // Fetch + decode + index the TTS audio for a passage. Returns the cached
 // values on hit, fetches on miss, dedups concurrent calls. Resolves to
 // { audioBuffer, tokenTimes } on success or null on failure (file missing,
@@ -2450,6 +2471,53 @@ function _playTtsSegment(startSec, endSec) {
   src.onended = () => { if (_ttsCurrentSource === src) _ttsCurrentSource = null; };
   _ttsCurrentSource = src;
   return src;
+}
+
+// Sprint 4: play user audio and TTS SIMULTANEOUSLY (mix mode). Both
+// AudioBufferSourceNodes are scheduled to start at the same ctx.currentTime
+// offset (50ms in the future to ensure sub-frame sync across the Web Audio
+// scheduler) and both connect to ctx.destination — Web Audio's default
+// mixing bus combines them automatically. No need to construct a separate
+// GainNode or merger unless we want per-channel pan.
+// Stops any in-flight user + TTS first so successive clicks don't overlap.
+// Each source tracks itself independently (_replayCurrentSource /
+// _ttsCurrentSource) so natural-ended sources don't clobber the other.
+function _playMixedSegment(userBuf, userTime, ttsBuf, ttsTime) {
+  if (!userBuf || !userTime) return null;
+  const ctx = _getReplayAudioCtx();
+  if (!ctx) {
+    showToast('❌ 瀏覽器不支援音訊播放');
+    return null;
+  }
+  if (ctx.state === 'suspended') { ctx.resume().catch(() => {}); }
+  // Stop any in-flight sources (both user + TTS) so the new click starts
+  // clean. Belt-and-suspenders — _playFromTargetToken also calls _stopTts()
+  // and the user-source replace happens inside _playAudioSegment below.
+  if (_ttsCurrentSource) { try { _ttsCurrentSource.stop(); } catch (e) {} _ttsCurrentSource = null; }
+  // Schedule both at the same instant for sub-frame sync. 50ms lead time
+  // is the standard Web Audio pattern — the scheduler batches all nodes
+  // scheduled before the next render quantum together.
+  const startAt = ctx.currentTime + 0.05;
+  // User audio source
+  const userDur = Math.max(0.05, userTime.endSec - userTime.startSec);
+  const userSrc = ctx.createBufferSource();
+  userSrc.buffer = userBuf;
+  userSrc.connect(ctx.destination);
+  userSrc.start(startAt, Math.max(0, userTime.startSec), userDur);
+  userSrc.onended = () => { if (_replayCurrentSource === userSrc) _replayCurrentSource = null; };
+  _replayCurrentSource = userSrc;
+  // TTS source (if loaded)
+  let ttsSrc = null;
+  if (ttsBuf && ttsTime) {
+    const ttsDur = Math.max(0.05, ttsTime.endSec - ttsTime.startSec);
+    ttsSrc = ctx.createBufferSource();
+    ttsSrc.buffer = ttsBuf;
+    ttsSrc.connect(ctx.destination);
+    ttsSrc.start(startAt, Math.max(0, ttsTime.startSec), ttsDur);
+    ttsSrc.onended = () => { if (_ttsCurrentSource === ttsSrc) _ttsCurrentSource = null; };
+    _ttsCurrentSource = ttsSrc;
+  }
+  return { userSrc, ttsSrc };
 }
 
 // ================== SPRINT 2: CLICK-TO-REPLAY (KILLER FEATURE) ==================
@@ -2684,9 +2752,10 @@ function _playAudioSegment(audioBuffer, startSec, endSec) {
 
 // Click handler bound by _renderDiffHighlight: look up the audio slice for
 // this target-token-index and play it. For 'del' tokens (no user audio),
-// show a toast and skip playback. Sprint 3: also chains the matching TTS
-// slice (Cantonese model voice) after the user audio ends, so the student
-// hears "我嗰刻" then "model 嗰個版本" of the same character back-to-back.
+// show a toast and skip playback.
+// - Sprint 3 "chain" mode: user audio first, then TTS chained on natural end
+// - Sprint 4 "mix" mode: both play simultaneously (sub-frame synced via
+//   shared startAt = ctx.currentTime + 0.05)
 function _playFromTargetToken(targetIdx) {
   const ctx = _lastScoreContext;
   if (!ctx || !ctx.audioBuffer || !ctx.targetIdxToTime) {
@@ -2698,21 +2767,32 @@ function _playFromTargetToken(targetIdx) {
     showToast('⏸ 漏咗讀 — 呢個字冇錄音');
     return;
   }
-  // Stop any in-flight TTS first so the chain restarts cleanly with the
-  // new target. Also reset the pending chain to this target — if the
-  // current user-audio is interrupted by an even-newer click, that new
-  // click will overwrite _pendingTtsChainIdx before this source's
-  // onended fires, so we won't accidentally chain the wrong TTS.
-  _stopTts();
-  _pendingTtsChainIdx = (_ttsAudioBuffer && _ttsTokenTimes && _ttsTokenTimes[targetIdx]) ? targetIdx : -1;
-  // Play user audio
-  _playAudioSegment(ctx.audioBuffer, entry.time.startSec, entry.time.endSec);
-  // Visual flash on the clicked span (best-effort — may be detached after rerender)
+  // Visual flash on the clicked span (best-effort — may be detached after rerender).
+  // Flash duration tracks the longer of user/TTS so the visual cue matches playback.
+  const ttsT = (_ttsTokenTimes && _ttsTokenTimes[targetIdx]) ? _ttsTokenTimes[targetIdx] : null;
+  const userDurMs = (entry.time.endSec - entry.time.startSec) * 1000;
+  const ttsDurMs = ttsT ? (ttsT.endSec - ttsT.startSec) * 1000 : 0;
+  const flashMs = Math.max(350, Math.ceil(Math.max(userDurMs, ttsDurMs)));
   const el = document.querySelector(`[data-replay-target-idx="${targetIdx}"]`);
   if (el) {
     el.style.outline = '3px solid #7c3aed';
     el.style.outlineOffset = '2px';
-    setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 350);
+    setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, flashMs);
+  }
+  // Branch on play mode
+  if (_playMode === 'mix') {
+    // Sprint 4: simultaneous mix — both sources scheduled at same startAt
+    _playMixedSegment(
+      ctx.audioBuffer, entry.time,
+      _ttsAudioBuffer, ttsT
+    );
+  } else {
+    // Sprint 3 chain mode: user audio first, TTS chained on natural end.
+    // Stop in-flight TTS so chain restarts cleanly. _pendingTtsChainIdx
+    // is consumed by _playAudioSegment's onended handler.
+    _stopTts();
+    _pendingTtsChainIdx = (ttsT && _ttsAudioBuffer) ? targetIdx : -1;
+    _playAudioSegment(ctx.audioBuffer, entry.time.startSec, entry.time.endSec);
   }
 }
 
@@ -3212,12 +3292,30 @@ function _renderDiffHighlight(target, align, transcript) {
     html += `</div>`;
   }
   el.innerHTML = html;
+  // Sprint 4: mode toggle (chain / mix) — always visible when replayable.
+  // Persists in sessionStorage. Default "chain" preserves Sprint 3 behavior;
+  // "mix" plays user + TTS simultaneously for direct A/B comparison.
+  if (replayable) {
+    const modeToggle = document.createElement('div');
+    modeToggle.style.cssText = 'margin-top:10px;margin-bottom:6px;padding:8px 10px;background:#f3f4f6;border-radius:8px;display:flex;align-items:center;gap:8px;font-size:0.85em;flex-wrap:wrap;';
+    const chainActive = _playMode === 'chain';
+    modeToggle.innerHTML = `
+      <span style="color:#5b21b6;font-weight:bold;">🎧 播放模式：</span>
+      <button data-replay-mode="chain" style="background:${chainActive ? '#7c3aed' : '#e5e7eb'};color:${chainActive ? '#fff' : '#374151'};padding:5px 12px;border-radius:6px;border:none;cursor:pointer;font-size:0.9em;font-weight:${chainActive ? 'bold' : 'normal'};" title="自己先讀，model 跟住讀">⏯ 背靠背</button>
+      <button data-replay-mode="mix" style="background:${!chainActive ? '#7c3aed' : '#e5e7eb'};color:${!chainActive ? '#fff' : '#374151'};padding:5px 12px;border-radius:6px;border:none;cursor:pointer;font-size:0.9em;font-weight:${!chainActive ? 'bold' : 'normal'};" title="兩個同時播，直接對比差異">🔀 同時</button>
+      <span style="color:#6b7280;font-size:0.82em;margin-left:auto;">${chainActive ? '聽「自己→model」順序' : '聽「自己+model」重疊'}</span>
+    `;
+    el.appendChild(modeToggle);
+    modeToggle.querySelectorAll('button[data-replay-mode]').forEach(btn => {
+      btn.onclick = (e) => { e.stopPropagation(); _setPlayMode(btn.dataset.replayMode); };
+    });
+  }
   // Add a one-time hint if the user hasn't discovered click-to-replay yet
   if (replayable && !sessionStorage.getItem('yueReplayHintShown')) {
     sessionStorage.setItem('yueReplayHintShown', '1');
     const hint = document.createElement('div');
     hint.style.cssText = 'margin-top:8px;padding:6px 10px;background:#ddd6fe;color:#5b21b6;border-radius:8px;font-size:0.82em;text-align:left;';
-    hint.innerHTML = '💡 <b>新功能：</b>撳任何「<span style="color:#16a34a;">啱</span> / <span style="color:#dc2626;text-decoration:line-through;">錯</span> / <span style="color:#6b7280;border-bottom:2px dotted #9ca3af;">漏</span> / <span style="background:#fef3c7;">多咗</span>」嘅字就會聽到自己嗰刻錄嘅音，<b>仲會自動播埋標準粵語發音</b>畀你對比。';
+    hint.innerHTML = '💡 <b>新功能：</b>撳任何「<span style="color:#16a34a;">啱</span> / <span style="color:#dc2626;text-decoration:line-through;">錯</span> / <span style="color:#6b7280;border-bottom:2px dotted #9ca3af;">漏</span> / <span style="background:#fef3c7;">多咗</span>」嘅字就會聽到自己嗰刻錄嘅音，<b>仲會自動播埋標準粵語發音</b>畀你對比。<br>💡 上面嘅「🔀 同時」可以兩個一齊播直接聽差異。';
     el.appendChild(hint);
   }
 }
@@ -5864,6 +5962,8 @@ window.App = {
   _startWordRepractice, _repracticeListen, _repracticeRecord,
   // Sprint 2: click-to-replay on diff highlight spans
   _playFromTargetToken, _playFromInsertToken,
+  // Sprint 4: play mode toggle (chain / mix)
+  _setPlayMode,
   // Cert + result
   showCertModal, closeCertModal, showConfetti,
   // My progress
