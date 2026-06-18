@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'ios-mime-constraints @ 2026-06-18';
+  window.__BUILD_ID = 'vu-bar-wakelock @ 2026-06-18';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -591,6 +591,173 @@ function getAudioConstraints() {
     video: false
   };
 }
+
+// ---------------------------------------------------------------------------
+// Sprint 1 — Live VU bar (AnalyserNode + 50x8 canvas) + wakeLock
+// (added 2026-06-18, after the iOS PWA MIME hotfix).
+//
+// Why both together:
+//   - VU bar: AnalyserNode taps the same MediaStream the MediaRecorder is
+//     consuming, RMS-derived level 0-1, 50-cell ring buffer drawn as a
+//     50x8px canvas. Gives the student real-time "I see my voice" feedback
+//     while reading. Especially important for SEN kids who can't otherwise
+//     tell whether the mic is actually capturing them.
+//   - wakeLock: iPad PWA auto-locks the screen after ~30s of inactivity
+//     (no touch, no scroll). During a multi-passage reading session the
+//     student reads slowly → screen dims → mic is killed mid-recording →
+//     MediaRecorder produces a truncated blob. `wakeLock.request('screen')`
+//     prevents that, and we re-acquire on `visibilitychange` because the
+//     browser auto-releases when the page goes background.
+// ---------------------------------------------------------------------------
+let _vuAudioContext = null;
+let _vuAnalyser = null;
+let _vuAnimationId = null;
+let _vuCanvas = null;
+let _vuSource = null;
+let _wakeLock = null;
+// Set true while a recording session is in progress, so the
+// visibilitychange handler knows whether to re-acquire a wakeLock that
+// the browser auto-released when the tab was backgrounded.
+let _wakeLockWanted = false;
+
+function attachVU(stream) {
+  try {
+    const canvas = document.getElementById('vuBar');
+    if (!canvas) {
+      console.warn('attachVU: #vuBar not in DOM yet, skipping');
+      return;
+    }
+    _vuCanvas = canvas;
+    const ctx2d = canvas.getContext('2d');
+    if (!ctx2d) return;
+    // (Re)create AudioContext. Some browsers (Safari iOS) start the
+    // context in 'suspended' state until a user gesture fires; we just
+    // resumed via the startRecording() click, so resume() is safe.
+    if (!_vuAudioContext || _vuAudioContext.state === 'closed') {
+      _vuAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (_vuAudioContext.state === 'suspended') {
+      _vuAudioContext.resume().catch(() => {});
+    }
+    // Disconnect any previous source (e.g. user re-recorded without
+    // detachVU firing on the previous onstop, rare but possible on iPad
+    // PWA suspend/resume).
+    if (_vuSource) {
+      try { _vuSource.disconnect(); } catch (e) {}
+      _vuSource = null;
+    }
+    _vuSource = _vuAudioContext.createMediaStreamSource(stream);
+    _vuAnalyser = _vuAudioContext.createAnalyser();
+    _vuAnalyser.fftSize = 64;
+    _vuAnalyser.smoothingTimeConstant = 0.4;
+    _vuSource.connect(_vuAnalyser);
+    const buf = new Uint8Array(_vuAnalyser.fftSize);
+    const HISTORY = 50;
+    const history = new Array(HISTORY).fill(0);
+    let histIdx = 0;
+    const draw = () => {
+      // Re-query canvas: the user may have navigated away and back,
+      // detaching the old DOM node. If so, bail.
+      const liveCanvas = document.getElementById('vuBar');
+      if (!liveCanvas || liveCanvas !== _vuCanvas) {
+        _vuAnimationId = null;
+        return;
+      }
+      _vuAnalyser.getByteTimeDomainData(buf);
+      // RMS over the time-domain window. Speech on a 16kHz mono mic
+      // typically sits at 0.01-0.15 RMS, so we apply a 4x gain to map
+      // comfortable speech into the 0.05-0.6 visible range.
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const v = (buf[i] - 128) / 128;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / buf.length);
+      const level = Math.min(1, rms * 4);
+      history[histIdx] = level;
+      histIdx = (histIdx + 1) % HISTORY;
+      // Draw: clear, then 50 cells left→right, each 1px wide and
+      // `level*8` px tall, bottom-aligned. Green / yellow / red by
+      // level for instant "too loud / just right" feedback.
+      ctx2d.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx2d.fillRect(0, 0, HISTORY, 8);
+      for (let i = 0; i < HISTORY; i++) {
+        const idx = (histIdx + i) % HISTORY;
+        const v = history[idx];
+        const h = Math.max(1, Math.round(v * 8));
+        let color = '#22c55e';     // green (quiet)
+        if (v > 0.6) color = '#ef4444';        // red (loud / clipping)
+        else if (v > 0.3) color = '#f59e0b';   // yellow (mid)
+        ctx2d.fillStyle = color;
+        ctx2d.fillRect(i, 8 - h, 1, h);
+      }
+      _vuAnimationId = requestAnimationFrame(draw);
+    };
+    if (_vuAnimationId != null) cancelAnimationFrame(_vuAnimationId);
+    _vuAnimationId = requestAnimationFrame(draw);
+  } catch (e) {
+    console.warn('attachVU failed', e);
+    __debug?.warn?.('attachVU.fail', { message: e?.message });
+  }
+}
+
+function detachVU() {
+  if (_vuAnimationId != null) {
+    cancelAnimationFrame(_vuAnimationId);
+    _vuAnimationId = null;
+  }
+  if (_vuSource) {
+    try { _vuSource.disconnect(); } catch (e) {}
+    _vuSource = null;
+  }
+  _vuAnalyser = null;
+  _vuCanvas = null;
+  if (_vuAudioContext && _vuAudioContext.state !== 'closed') {
+    _vuAudioContext.close().catch(() => {});
+  }
+  _vuAudioContext = null;
+}
+
+async function acquireWakeLock() {
+  _wakeLockWanted = true;
+  try {
+    if (!('wakeLock' in navigator)) return;     // Safari < 16.4, Firefox, etc.
+    if (_wakeLock && !_wakeLock.released) return;  // already held
+    const wl = await navigator.wakeLock.request('screen');
+    _wakeLock = wl;
+    wl.addEventListener('release', () => {
+      // Browser auto-released (visibility change to background, or our
+      // explicit release()). Clear the ref so the next acquire creates
+      // a fresh sentinel.
+      _wakeLock = null;
+    });
+    __debug?.log?.('wakeLock.acquired');
+  } catch (e) {
+    // Permission denied, no user activation, or unsupported. Not fatal —
+    // recording still works, just risks iPad auto-lock.
+    console.warn('wakeLock request failed', e);
+    _wakeLock = null;
+  }
+}
+
+function releaseWakeLock() {
+  _wakeLockWanted = false;
+  if (_wakeLock) {
+    try { _wakeLock.release(); } catch (e) {}
+    _wakeLock = null;
+  }
+}
+
+// Re-acquire wakeLock when the page comes back to foreground — the
+// browser auto-releases on `visibilitychange` to background, so without
+// this the user would lose the lock the moment they switched apps to
+// check the reading passage. (Common SEN-student workflow: read passage
+// in their textbook → switch back to the app to record.)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && _wakeLockWanted) {
+    acquireWakeLock();
+  }
+});
 
 const __debug = (() => {
   let enabled = false;
@@ -1336,6 +1503,7 @@ function startRecording() {
         🔴 錄音中
       </div>
       <div class="recbar"><div class="recbar-recording"></div></div>
+      <canvas id="vuBar" width="50" height="8" style="background:rgba(255,255,255,0.05);border-radius:2px;image-rendering:pixelated;" title="即時音量"></canvas>
       <div style="font-size:1em;color:rgba(255,255,255,0.7);">大聲朗讀文章，準備好就撳「完成」 👄</div>
       <button onclick="App._stopRecordingFromUI()" style="background:#22c55e;font-size:1.2em;padding:14px 32px;min-height:56px;border-radius:14px;color:#fff;min-width:160px;">⏹ 完成</button>
     </div>`;
@@ -1418,11 +1586,25 @@ function startRecording() {
           // above permanently bails out and we lose audioBlob coverage
           // for the 2nd+ recording session in the same page session.
           if (_currentRecorder === rec) _currentRecorder = null;
+          // Sprint 1: tear down the live VU + wakeLock now that the
+          // parallel MediaRecorder has stopped.
+          detachVU();
+          releaseWakeLock();
         };
         _currentRecorder = rec;
+        // Sprint 1: attach the VU meter to the same stream the
+        // MediaRecorder is consuming, and request a screen wakeLock
+        // so the iPad doesn't auto-lock mid-recording.
+        attachVU(stream);
+        acquireWakeLock();
         try { rec.start(); }
         catch (e) { console.warn('parallel recorder start failed', e); }
-      }).catch(e => { console.warn('parallel getUserMedia failed', e); });
+      }).catch(e => {
+        console.warn('parallel getUserMedia failed', e);
+        // WakeLock may have been requested before the rejection; make
+        // sure we don't hold a phantom ref.
+        releaseWakeLock();
+      });
     }
 
     recognition.onresult = (event) => {
@@ -1553,10 +1735,19 @@ function startRecording() {
           <button onclick="App.startRecording()" style="background:#0ea5e9;font-size:1em;padding:10px 18px;border-radius:10px;color:#fff;min-height:48px;">🔄 再試一次</button>
         </div>`;
       showToast('❌ 麥克風無回應，檢查權限');
+      // Sprint 1: even on timeout we never released a wakeLock, but be
+      // defensive — user may have re-tapped 完成 and we don't want a
+      // stranded sentinel.
+      releaseWakeLock();
     }, 5000);
     navigator.mediaDevices.getUserMedia(getAudioConstraints()).then(stream => {
       clearTimeout(__gumTimeout);
       __debug.log('getUserMedia.then', { tracks: stream.getTracks().length, trackKinds: stream.getTracks().map(t => t.kind) });
+      // Sprint 1: attach the live VU meter to the same stream the
+      // MediaRecorder is consuming, and request a screen wakeLock so
+      // the iPad doesn't auto-lock mid-recording.
+      attachVU(stream);
+      acquireWakeLock();
       _currentRecorder = new MediaRecorder(stream, pickMimeType() ? { mimeType: pickMimeType() } : undefined);
       const rec = _currentRecorder;  // capture for closure
       const chunks = [];
@@ -1594,6 +1785,13 @@ function startRecording() {
         }
         __debug.log('onstop.guardPassed', { recState: this?.state, recMime: this?.mimeType });
         stream.getTracks().forEach(t => t.stop());
+        // Sprint 1: tear down the live VU + wakeLock now that the
+        // MediaRecorder has stopped. We do this BEFORE the long
+        // transcribe pipeline so the iPad can auto-lock during the
+        // 5-30s whisper inference — the user isn't actively reading
+        // anymore, just waiting.
+        detachVU();
+        releaseWakeLock();
         const blob = new Blob(chunks, { type: this.mimeType || 'audio/webm' });
         _currentAudioBlob = blob;
         _currentRecorder = null;
@@ -1816,6 +2014,11 @@ function startRecording() {
       // Re-query status (closure-captured one may be detached).
       const st = document.getElementById('recordingStatus');
       if (st) st.innerHTML = '❌ 麥克風權限被拒：' + err.message;
+      // Sprint 1: defensive release — getUserMedia may have resolved
+      // briefly then failed, or wakeLock may have been acquired before
+      // the rejection. We never want a stranded sentinel.
+      detachVU();
+      releaseWakeLock();
     });
   }
 }
@@ -2648,7 +2851,18 @@ function _repracticeRecord() {
         // For non-webspeech engines we still get a blob; we can't transcribe without the engine.
         // Fall back to "recorded" confirmation only.
         _finishWordRepractice([], blob);
+        // Sprint 1: release the screen wakeLock we acquired before
+        // start(). The 3s auto-stop is so short that the iPad
+        // auto-lock risk is small, but a slow first-paint could
+        // exceed 30s if the mic permission dialog is showing while
+        // the user is reading instructions.
+        releaseWakeLock();
       };
+      // Sprint 1: hold the iPad screen awake during the brief
+      // single-word recording. (Skip VU bar — repractice is only
+      // 3s and the status div is too small to host a meaningful
+      // canvas.)
+      acquireWakeLock();
       _repracticeRecorder.start();
       // 3-second auto-stop for single-word practice
       setTimeout(() => {
@@ -2657,6 +2871,7 @@ function _repracticeRecord() {
     }).catch(err => {
       status.innerHTML = '❌ 麥克風權限被拒：' + err.message;
       recBtn.disabled = false; recBtn.textContent = '🎤 讀一次'; recBtn.style.background = '#ef4444';
+      releaseWakeLock();
     });
   } else {
     status.innerHTML = '❌ 此瀏覽器不支援錄音';
