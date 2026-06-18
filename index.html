@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'heartbeat-elapsed @ 2026-06-18';
+  window.__BUILD_ID = 'prewarm-fakeprogress @ 2026-06-18';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -857,17 +857,35 @@ const _ASR_ENGINES = {
         __debug.mark('whisper._blobToFloat32.start');
         const audio = await _blobToFloat32(audioBlob);
         __debug.log('whisper._blobToFloat32.done', { samples: audio.length, durationSec: +(audio.length / 16000).toFixed(2) });
-        if (onProgress) onProgress({ stage: 'transcribe', message: '⏳ Whisper 識別中…' });
+        if (onProgress) onProgress({ stage: 'transcribe', message: '⏳ Whisper 識別中… (0%)' });
         // Cantonese: whisper doesn't have 'cantonese' code, but 'zh' works
         // (model is multilingual). Add language hint to bias toward Chinese.
         __debug.mark('whisper.pipe.inference');
-        const result = await pipe(audio, {
-          language: 'chinese',  // closer to Cantonese than 'zh'
-          task: 'transcribe',
-          // Chunked for long audio (we send ~4s, so this is safe)
-          chunk_length_s: 30,
-          stride_length_s: 5
-        });
+        // Fake progress timer: transformers.js does not emit intermediate
+        // progress between stage=transcribe and the final result, so the
+        // user sees a frozen banner for 5-15s on first use. Tick a % every
+        // 800ms (capped at 95%, since we can't know when pipe() actually
+        // resolves) so the user sees a moving counter. The real "100%" is
+        // emitted just before the await returns. Cleared in finally so
+        // errors also stop the timer.
+        let __whisperFakePct = 0;
+        const __whisperFakeTimer = setInterval(() => {
+          __whisperFakePct = Math.min(95, __whisperFakePct + 8);
+          if (onProgress) onProgress({ stage: 'transcribe', message: `⏳ Whisper 識別中… (${__whisperFakePct}%)` });
+        }, 800);
+        let result;
+        try {
+          result = await pipe(audio, {
+            language: 'chinese',  // closer to Cantonese than 'zh'
+            task: 'transcribe',
+            // Chunked for long audio (we send ~4s, so this is safe)
+            chunk_length_s: 30,
+            stride_length_s: 5
+          });
+          if (onProgress) onProgress({ stage: 'transcribe', message: '⏳ Whisper 識別中… (100%)' });
+        } finally {
+          clearInterval(__whisperFakeTimer);
+        }
         __debug.log('whisper.pipe.inference.done', { ms: +(performance.now() - t0).toFixed(0) });
         const text = (result && result.text) ? result.text.trim() : '';
         return {
@@ -2935,6 +2953,23 @@ async function init() {
 
   // Recording is unlimited; legacy yueRecordingTimeout no longer used.
   state.recordingTimeout = null;
+
+  // Pre-warm whisper at app load (fire-and-forget). The 5-15s WASM
+  // compile + model download is paid during loading screen, not during
+  // the student's first recording. The 10s silent gap during inference
+  // (transformers.js emits no intermediate progress) was the root cause
+  // of the panic-skip pattern; pre-warming shrinks that gap to ~2-5s
+  // for cached inference. Failures are logged but don't block init.
+  if (state.asrEngine === 'whisper' && _ASR_ENGINES.whisper.isAvailable()) {
+    __debug.mark('init.prewarm.whisper.start');
+    _ASR_ENGINES.whisper._ensurePipeline((p) => {
+      __debug.log('init.prewarm.whisper.progress', { stage: p.stage, message: p.message });
+    }).then(() => {
+      __debug.mark('init.prewarm.whisper.done');
+    }).catch((e) => {
+      __debug.warn('init.prewarm.whisper.fail', { message: e.message });
+    });
+  }
 
   state.mode = 'student';
   const lastStudent = localStorage.getItem('yueLastStudentId');
