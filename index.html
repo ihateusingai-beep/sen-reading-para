@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'vu-bar-wakelock @ 2026-06-18';
+  window.__BUILD_ID = 'click-replay @ 2026-06-18';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -157,14 +157,32 @@ button:active { transform:scale(0.95); }
   height: 100%;
   animation: recbar-processing 2.0s ease-in-out infinite;
 }
-.recbar-whisper {
-  background: linear-gradient(90deg,
-    rgba(124,58,237,0) 0%,
-    rgba(124,58,237,0.95) 50%,
-    rgba(124,58,237,0) 100%);
-  height: 100%;
-  animation: recbar-processing 2.5s ease-in-out infinite;
-}
+ .recbar-whisper {
+   background: linear-gradient(90deg,
+     rgba(124,58,237,0) 0%,
+     rgba(124,58,237,0.95) 50%,
+     rgba(124,58,237,0) 100%);
+   height: 100%;
+   animation: recbar-processing 2.5s ease-in-out infinite;
+ }
+ /* Sprint 2: click-to-replay hover affordance. Cursor + subtle lift on hover
+    so the clickable diff spans feel like buttons, not just colored text. */
+ #resultDiff [data-replay-target-idx],
+ #resultDiff [data-replay-ins-pos] {
+   transition: transform 0.08s ease-out, box-shadow 0.08s ease-out;
+   user-select: none;
+   -webkit-tap-highlight-color: rgba(124,58,237,0.2);
+ }
+ #resultDiff [data-replay-target-idx]:hover,
+ #resultDiff [data-replay-ins-pos]:hover {
+   transform: translateY(-1px);
+   box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+   filter: brightness(1.05);
+ }
+ #resultDiff [data-replay-target-idx]:active,
+ #resultDiff [data-replay-ins-pos]:active {
+   transform: translateY(0);
+ }
 </style>
 </head>
 <body>
@@ -278,7 +296,7 @@ button:active { transform:scale(0.95); }
 
     <!-- 逐字 diff highlight -->
     <div style="background:#f3e8ff;padding:14px;border-radius:14px;margin:14px 0;text-align:left;">
-      <div style="font-weight:bold;margin-bottom:6px;color:#7c3aed;font-size:0.95em;">📝 逐字對齊 <span style="font-weight:normal;font-size:0.85em;color:rgba(0,0,0,0.6);">（綠=啱 紅=錯 灰=漏咗 黃=多咗）</span></div>
+      <div style="font-weight:bold;margin-bottom:6px;color:#7c3aed;font-size:0.95em;">📝 逐字對齊 <span style="font-weight:normal;font-size:0.85em;color:rgba(0,0,0,0.6);">（綠=啱 紅=錯 灰=漏咗 黃=多咗）</span> <span style="font-weight:normal;font-size:0.82em;color:#7c3aed;background:#ede9fe;padding:2px 8px;border-radius:6px;margin-left:6px;">👆 撳字聽自己</span></div>
       <div id="resultDiff" style="line-height:1.9;font-size:1.15em;font-family:inherit;"></div>
     </div>
 
@@ -2307,6 +2325,263 @@ async function _analyzeAudioFeatures(blob, charCount) {
   }
 }
 
+// ================== SPRINT 2: CLICK-TO-REPLAY (KILLER FEATURE) ==================
+// Decode a recorded audio Blob into an AudioBuffer for fast segment playback.
+// Returns null on decode failure (caller should disable click-replay).
+// Cached as `_lastScoreContext.audioBuffer` so we decode once per take.
+async function _decodeAudioBuffer(blob) {
+  if (!blob || !blob.size) return null;
+  try {
+    const buf = await blob.arrayBuffer();
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return null;
+    const ctx = new AudioCtx();
+    const decoded = await ctx.decodeAudioData(buf.slice(0));
+    ctx.close();
+    return decoded;
+  } catch (e) {
+    console.warn('[replay] decodeAudioData failed', e);
+    return null;
+  }
+}
+
+// Scan an AudioBuffer for word boundaries via silence-gap detection.
+// Returns an array of {startSec, endSec} speech regions, in chronological order.
+// Tunes for spoken Chinese reading (one character per word, ~200ms per char,
+// 100-400ms natural pauses between chars/words).
+//   - 20ms windows (fine-grained)
+//   - 0.005 RMS threshold (catches softer syllables)
+//   - 180ms min silence (filters intra-syllable pauses but keeps word breaks)
+function _detectWordBoundaries(audioBuffer) {
+  if (!audioBuffer) return [];
+  const ch = audioBuffer.getChannelData(0);
+  const sr = audioBuffer.sampleRate;
+  const winSize = Math.max(1, Math.floor(sr * 0.02));         // 20ms
+  const minSilenceWin = Math.ceil(sr * 0.18 / winSize);        // 180ms
+  const threshold = 0.005;
+  const minRegionSec = 0.04;                                   // skip blips < 40ms
+  const regions = [];
+  let inSpeech = false, runStartWin = 0, silenceRun = 0;
+  const totalWin = Math.ceil(ch.length / winSize);
+  for (let w = 0; w < totalWin; w++) {
+    const start = w * winSize;
+    const end = Math.min(start + winSize, ch.length);
+    let sumSq = 0;
+    for (let k = start; k < end; k++) sumSq += ch[k] * ch[k];
+    const rms = Math.sqrt(sumSq / Math.max(1, end - start));
+    if (rms >= threshold) {
+      if (!inSpeech) { inSpeech = true; runStartWin = w; }
+      silenceRun = 0;
+    } else if (inSpeech) {
+      silenceRun++;
+      if (silenceRun >= minSilenceWin) {
+        const endWin = w - silenceRun + 1;
+        const startSec = (runStartWin * winSize) / sr;
+        const endSec = (endWin * winSize) / sr;
+        if (endSec - startSec >= minRegionSec) {
+          regions.push({ startSec, endSec });
+        }
+        inSpeech = false;
+      }
+    }
+  }
+  // Tail region
+  if (inSpeech) {
+    const startSec = (runStartWin * winSize) / sr;
+    const endSec = ch.length / sr;
+    if (endSec - startSec >= minRegionSec) {
+      regions.push({ startSec, endSec });
+    }
+  }
+  return regions;
+}
+
+// Map N user-tokens to M detected speech regions. Distributes tokens across
+// regions proportionally to each region's duration, splitting each region
+// evenly among its assigned tokens. Falls back to even time distribution
+// when M=0 (no silence detected) or audioDuration=0.
+//
+// Why proportional-not-round-robin: a long "太陽" syllable pair should get
+// more time than a short "嘅" — duration is the strongest signal we have
+// for how much phonetic weight a user gave each token. Linear-proportional
+// assignment preserves that signal in the click-replay mapping.
+function _buildUserTokenTimes(userTokens, regions, audioDuration) {
+  const N = userTokens.length;
+  if (N === 0) return [];
+  if (!regions || regions.length === 0 || !audioDuration) {
+    // Even fallback across full audio duration
+    return userTokens.map((_, i) => ({
+      startSec: (i / N) * audioDuration,
+      endSec: ((i + 1) / N) * audioDuration,
+    }));
+  }
+  const M = regions.length;
+  const totalDur = regions.reduce((s, r) => s + (r.endSec - r.startSec), 0);
+  if (totalDur <= 0) {
+    return userTokens.map((_, i) => ({
+      startSec: (i / N) * audioDuration,
+      endSec: ((i + 1) / N) * audioDuration,
+    }));
+  }
+  const result = new Array(N);
+  let tokenIdx = 0;
+  for (let r = 0; r < M && tokenIdx < N; r++) {
+    const region = regions[r];
+    const dur = region.endSec - region.startSec;
+    const remainingTokens = N - tokenIdx;
+    const remainingRegions = M - r;
+    let tokensInRegion;
+    if (r === M - 1) {
+      tokensInRegion = remainingTokens;
+    } else {
+      tokensInRegion = Math.max(1, Math.round((dur / totalDur) * N));
+      // Don't starve later regions — leave at least 1 token per remaining region
+      tokensInRegion = Math.min(tokensInRegion, remainingTokens - (remainingRegions - 1));
+    }
+    for (let t = 0; t < tokensInRegion && tokenIdx < N; t++) {
+      result[tokenIdx] = {
+        startSec: region.startSec + (dur * t / tokensInRegion),
+        endSec: region.startSec + (dur * (t + 1) / tokensInRegion),
+      };
+      tokenIdx++;
+    }
+  }
+  // Fill any remaining tokens with even distribution across the full audio
+  while (tokenIdx < N) {
+    result[tokenIdx] = {
+      startSec: (tokenIdx / N) * audioDuration,
+      endSec: ((tokenIdx + 1) / N) * audioDuration,
+    };
+    tokenIdx++;
+  }
+  return result;
+}
+
+// Build a lookup table that maps a target-token-index to its associated
+// user-token-time slice (or null if the user said nothing for that token).
+// Walks the alignment ops in order, keeping parallel counters for the
+// target and user token streams. Convention (see _alignTokens):
+//   match: 1 target + 1 user
+//   sub:   1 target + 1 user (different chars)
+//   del:   1 target + 0 user (no audio for this target token)
+//   ins:   0 target + 1 user (inserted word; lives in the "多咗讀" section)
+function _buildTargetIdxToTimeMap(align, userTokenTimes) {
+  // Map: targetIdx → { userTokenIdx, time } | null (for del)
+  const targetMap = new Map();
+  // Map: ins-position-in-ops-array (i.e. array index) → { userTokenIdx, time }
+  // Used by the click handler for inserted tokens rendered at the bottom.
+  const insList = [];
+  let tIdx = 0, uIdx = 0;
+  for (let opIdx = 0; opIdx < align.ops.length; opIdx++) {
+    const o = align.ops[opIdx];
+    if (o.op === 'ins') {
+      insList.push({ insPos: opIdx, userTokenIdx: uIdx, time: userTokenTimes[uIdx] || null });
+      uIdx++;
+      continue;
+    }
+    if (o.op === 'del') {
+      targetMap.set(tIdx, null);
+      tIdx++;
+      continue;
+    }
+    // match / sub
+    targetMap.set(tIdx, { userTokenIdx: uIdx, time: userTokenTimes[uIdx] || null });
+    tIdx++;
+    uIdx++;
+  }
+  return { targetMap, insList };
+}
+
+// Shared AudioContext for click-to-replay. iOS Safari limits contexts per
+// page, so we reuse one. It starts suspended and must be resumed from a
+// user gesture (the click itself) — see _playAudioSegment.
+let _replayAudioCtx = null;
+let _replayCurrentSource = null;  // active AudioBufferSourceNode (to stop on new click)
+
+function _getReplayAudioCtx() {
+  if (_replayAudioCtx && _replayAudioCtx.state !== 'closed') return _replayAudioCtx;
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return null;
+  _replayAudioCtx = new AudioCtx();
+  return _replayAudioCtx;
+}
+
+// Play a slice of the audioBuffer from startSec to endSec. Auto-stops any
+// currently-playing segment so successive clicks don't overlap. Returns the
+// AudioBufferSourceNode (or null on failure).
+function _playAudioSegment(audioBuffer, startSec, endSec) {
+  if (!audioBuffer) return null;
+  const ctx = _getReplayAudioCtx();
+  if (!ctx) {
+    showToast('❌ 瀏覽器不支援音訊播放');
+    return null;
+  }
+  // iOS Safari: context starts suspended — resume on user gesture (this click)
+  if (ctx.state === 'suspended') {
+    ctx.resume().catch(() => {});
+  }
+  // Stop the previous segment, if any
+  if (_replayCurrentSource) {
+    try { _replayCurrentSource.stop(); } catch(e) {}
+    _replayCurrentSource = null;
+  }
+  const dur = Math.max(0.05, endSec - startSec);
+  const src = ctx.createBufferSource();
+  src.buffer = audioBuffer;
+  src.connect(ctx.destination);
+  src.start(0, Math.max(0, startSec), dur);
+  src.onended = () => {
+    if (_replayCurrentSource === src) _replayCurrentSource = null;
+  };
+  _replayCurrentSource = src;
+  return src;
+}
+
+// Click handler bound by _renderDiffHighlight: look up the audio slice for
+// this target-token-index and play it. For 'del' tokens (no user audio),
+// show a toast and skip playback.
+function _playFromTargetToken(targetIdx) {
+  const ctx = _lastScoreContext;
+  if (!ctx || !ctx.audioBuffer || !ctx.targetIdxToTime) {
+    showToast('❌ 冇錄音可重播');
+    return;
+  }
+  const entry = ctx.targetIdxToTime.get(targetIdx);
+  if (!entry || !entry.time) {
+    showToast('⏸ 漏咗讀 — 呢個字冇錄音');
+    return;
+  }
+  _playAudioSegment(ctx.audioBuffer, entry.time.startSec, entry.time.endSec);
+  // Visual flash on the clicked span (best-effort — may be detached after rerender)
+  const el = document.querySelector(`[data-replay-target-idx="${targetIdx}"]`);
+  if (el) {
+    el.style.outline = '3px solid #7c3aed';
+    el.style.outlineOffset = '2px';
+    setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 350);
+  }
+}
+
+// Click handler for inserted tokens (the "多咗讀" yellow spans).
+function _playFromInsertToken(insPos) {
+  const ctx = _lastScoreContext;
+  if (!ctx || !ctx.audioBuffer || !ctx.insList) {
+    showToast('❌ 冇錄音可重播');
+    return;
+  }
+  const entry = ctx.insList.find(e => e.insPos === insPos);
+  if (!entry || !entry.time) {
+    showToast('❌ 揾唔到錄音段');
+    return;
+  }
+  _playAudioSegment(ctx.audioBuffer, entry.time.startSec, entry.time.endSec);
+  const el = document.querySelector(`[data-replay-ins-pos="${insPos}"]`);
+  if (el) {
+    el.style.outline = '3px solid #ca8a04';
+    el.style.outlineOffset = '2px';
+    setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 350);
+  }
+}
+
 // 4-dimension reading scoring. Used by scorePassage() and single-word repractice.
 //  Returns {total, sub:{accuracy,coverage,fluency,expression}, alignment, tier, feedback, errorWords, fluencyMeta}
 function _computePassageScore(target, transcript, audioFeatures, passageType) {
@@ -2451,14 +2726,31 @@ function scorePassage(transcript, opts) {
     // sub-scores as the user types. Fallback path has no features (audioBlob
     // was empty or pipeline failed), so the helper handles features.valid=false
     // by skipping the fluency panel re-render.
+    // Sprint 2: still try to decode the audio for click-to-replay. If decode
+    // succeeds, spans in the empty diff render as clickable (with the existing
+    // transcript if any, or no audio mapping if transcript is empty). The
+    // user can still get value from "▶ 聽自己" + the per-char click flash.
     _lastScoreContext = {
       target, passage: p, transcript, features: { valid: false },
-      audioBlob: opts.audioBlob || null, passageType: p.type
+      audioBlob: opts.audioBlob || null, passageType: p.type,
+      audioBuffer: null, userTokenTimes: null, targetIdxToTime: null, insList: null,
     };
+    if (opts.audioBlob && !watchdogFired) {
+      // Async decode without blocking the fallback render — when it resolves
+      // we just stash the buffer for later clicks. The diff already rendered
+      // with non-clickable spans (because targetIdxToTime is null at render
+      // time); on next render (e.g. user edits the transcript) the buffer
+      // will be in place.
+      _decodeAudioBuffer(opts.audioBlob).then(ab => {
+        if (_lastScoreContext && _lastScoreContext.audioBlob === opts.audioBlob) {
+          _lastScoreContext.audioBuffer = ab;
+        }
+      }).catch(() => {});
+    }
   }
 
   // Inner pipeline
-  _analyzeAudioFeatures(opts.audioBlob, (transcript || '').length).then(features => {
+  _analyzeAudioFeatures(opts.audioBlob, (transcript || '').length).then(async features => {
     if (watchdogFired) return;  // watchdog already navigated; don't double-render
     clearTimeout(watchdog);
     try {
@@ -2494,19 +2786,44 @@ function scorePassage(transcript, opts) {
       document.getElementById('resultTier').textContent = `${tier.emoji} ${tier.label}獎${audioNote}`;
       document.getElementById('resultFeedback').textContent = feedback;
 
+      // Sprint 2: build click-to-replay data BEFORE rendering the diff so
+      // the first render already has clickable spans. Decodes the audioBlob
+      // (cached as AudioBuffer, no re-decode on subsequent renders), detects
+      // word boundaries via silence gaps, and maps target-token indices to
+      // their corresponding user-token time ranges. If anything fails the
+      // spans render as non-clickable (replayable=false in _renderDiffHighlight).
+      let replayData = { audioBuffer: null, userTokenTimes: null, targetIdxToTime: null, insList: null };
+      if (opts.audioBlob) {
+        try {
+          const audioBuffer = await _decodeAudioBuffer(opts.audioBlob);
+          if (audioBuffer) {
+            const userTokens = _tokenize(_normText(transcript || ''));
+            const regions = _detectWordBoundaries(audioBuffer);
+            const userTokenTimes = _buildUserTokenTimes(userTokens, regions, audioBuffer.duration);
+            const { targetMap, insList } = _buildTargetIdxToTimeMap(scoreResult.align, userTokenTimes);
+            replayData = { audioBuffer, userTokenTimes, targetIdxToTime: targetMap, insList };
+            __debug.log('replay.ready', { audioDur: audioBuffer.duration, regions: regions.length, userTokens: userTokens.length, insList: insList.length });
+          }
+        } catch (e) {
+          console.warn('[replay] setup failed', e);
+        }
+      }
+
+      // Stash the score context FIRST so _renderDiffHighlight can read
+      // replay data and wire click handlers on the initial render.
+      _lastScoreContext = {
+        target, passage: p, transcript, features, scoreResult,
+        audioBlob: opts.audioBlob || null, passageType: p.type,
+        audioBuffer: replayData.audioBuffer,
+        userTokenTimes: replayData.userTokenTimes,
+        targetIdxToTime: replayData.targetIdxToTime,
+        insList: replayData.insList,
+      };
+
       _renderSubScores(scoreResult.sub);
       _renderDiffHighlight(target, scoreResult.align, transcript);
       _renderFluencyPanel(scoreResult.fluencyMeta, features);
       _renderWordRetryList(scoreResult.wrongChars, p);
-
-      // Stash the score context so the transcript-edit textbox below can
-      // live-rerender without re-recording. The audio features are kept
-      // verbatim so fluency/expression stay stable across edits (only
-      // accuracy/coverage/filler will move based on the new transcript).
-      _lastScoreContext = {
-        target, passage: p, transcript, features, scoreResult,
-        audioBlob: opts.audioBlob || null, passageType: p.type
-      };
 
       document.getElementById('resultAI').innerHTML = `
         <div data-you-read style="margin-bottom:6px;"><b>你讀：</b>${_e(transcript || '（自訂模式）')}</div>
@@ -2572,6 +2889,15 @@ function _rerenderWithTranscript(editedTranscript) {
   document.getElementById('resultScore').textContent = scoreResult.total + '/100';
   const tier = _tierFromScore(scoreResult.total);
   document.getElementById('resultScore').style.color = tier.color;
+  // Sprint 2: recompute the click-to-replay target→time map with the new
+  // alignment so the new diff spans are still clickable. The audioBuffer
+  // and userTokenTimes array don't change (we're not re-recording), but
+  // the alignment ops did — so target→userToken mappings need to be rebuilt.
+  if (ctx.audioBuffer && ctx.userTokenTimes) {
+    const { targetMap, insList } = _buildTargetIdxToTimeMap(scoreResult.align, ctx.userTokenTimes);
+    ctx.targetIdxToTime = targetMap;
+    ctx.insList = insList;
+  }
   // Re-render sub-scores, diff highlight, word retry list
   _renderSubScores(scoreResult.sub);
   _renderDiffHighlight(ctx.target, scoreResult.align, cleanTranscript);
@@ -2670,6 +2996,11 @@ function _renderDiffHighlight(target, align, transcript) {
   // Now render target char-by-char
   let html = '';
   let renderedTokens = 0;
+  // Sprint 2: every colored target span becomes clickable — tap to play back
+  // the user's audio at that point. 'del' (gray) tokens have no user audio
+  // (they show a "漏咗" toast on click). The data-replay-target-idx hook
+  // is read by _playFromTargetToken via document.querySelector.
+  const replayable = !!(typeof _lastScoreContext !== 'undefined' && _lastScoreContext && _lastScoreContext.audioBuffer && _lastScoreContext.targetIdxToTime);
   for (let i = 0; i < target.length; i++) {
     const ch = target[i];
     const tokenIdx = targetTokenIndex[i];
@@ -2679,12 +3010,21 @@ function _renderDiffHighlight(target, align, transcript) {
     } else {
       const op = tTokenMap[tokenIdx];
       if (!op) { html += _e(ch); continue; }
+      const canReplay = replayable && op.op !== 'del';
+      // Build data-attr + onclick into the span. We embed cursor in the
+      // same style attribute (NOT a separate style=) to avoid the browser
+      // picking the second one and dropping the cursor hint.
+      const cursorStyle = canReplay ? 'cursor:pointer;' : (replayable && op.op === 'del' ? 'cursor:not-allowed;' : '');
+      const dataAttr = replayable ? `data-replay-target-idx="${tokenIdx}"` : '';
+      const onclickAttr = canReplay
+        ? `onclick="App._playFromTargetToken(${tokenIdx})"`
+        : (replayable && op.op === 'del' ? `onclick="App._playFromTargetToken(${tokenIdx})"` : '');
       if (op.op === 'match') {
-        html += `<span style="color:#16a34a;background:#dcfce7;padding:1px 3px;border-radius:4px;margin:0 1px;">${_e(ch)}</span>`;
+        html += `<span ${dataAttr} ${onclickAttr} style="${cursorStyle}color:#16a34a;background:#dcfce7;padding:1px 3px;border-radius:4px;margin:0 1px;">${_e(ch)}</span>`;
       } else if (op.op === 'sub') {
-        html += `<span style="color:#dc2626;background:#fee2e2;padding:1px 3px;border-radius:4px;margin:0 1px;text-decoration:line-through;" title="你讀咗「${_e(op.a)}」">${_e(ch)}</span>`;
+        html += `<span ${dataAttr} ${onclickAttr} style="${cursorStyle}color:#dc2626;background:#fee2e2;padding:1px 3px;border-radius:4px;margin:0 1px;text-decoration:line-through;" title="你讀咗「${_e(op.a)}」${canReplay ? ' — 撳聽自己' : ''}">${_e(ch)}</span>`;
       } else if (op.op === 'del') {
-        html += `<span style="color:#6b7280;background:#f3f4f6;padding:1px 3px;border-radius:4px;margin:0 1px;border-bottom:2px dotted #9ca3af;" title="漏咗讀">${_e(ch)}</span>`;
+        html += `<span ${dataAttr} ${onclickAttr} style="${cursorStyle}color:#6b7280;background:#f3f4f6;padding:1px 3px;border-radius:4px;margin:0 1px;border-bottom:2px dotted #9ca3af;" title="${canReplay ? '撳聽（會話「漏咗讀」）' : '漏咗讀'}">${_e(ch)}</span>`;
       } else {
         html += _e(ch);
       }
@@ -2692,15 +3032,30 @@ function _renderDiffHighlight(target, align, transcript) {
     }
   }
   // Append inserted tokens (extra words the student said that aren't in the passage)
-  const extras = align.ops.filter(o => o.op === 'ins');
+  // Sprint 2: ins tokens are also clickable — tap to hear the inserted word
+  // in context. The insPos is the position in align.ops for this ins.
+  const extras = align.ops.map((o, idx) => ({ o, idx })).filter(e => e.o.op === 'ins');
   if (extras.length) {
     html += `<div style="margin-top:8px;font-size:0.85em;color:#92400e;">多咗讀：`;
-    for (const o of extras) {
-      html += `<span style="background:#fef3c7;padding:1px 4px;border-radius:4px;margin:0 2px;">${_e(o.b)}</span>`;
+    for (const e of extras) {
+      const insPos = e.idx;
+      const canReplay = replayable;
+      const dataAttr = canReplay ? `data-replay-ins-pos="${insPos}"` : '';
+      const onclickAttr = canReplay ? `onclick="App._playFromInsertToken(${insPos})"` : '';
+      const cursorStyle = canReplay ? 'cursor:pointer;' : '';
+      html += `<span ${dataAttr} ${onclickAttr} style="${cursorStyle}background:#fef3c7;padding:1px 4px;border-radius:4px;margin:0 2px;" title="${canReplay ? '撳聽呢個多咗讀嘅字' : ''}">${_e(e.o.b)}</span>`;
     }
     html += `</div>`;
   }
   el.innerHTML = html;
+  // Add a one-time hint if the user hasn't discovered click-to-replay yet
+  if (replayable && !sessionStorage.getItem('yueReplayHintShown')) {
+    sessionStorage.setItem('yueReplayHintShown', '1');
+    const hint = document.createElement('div');
+    hint.style.cssText = 'margin-top:8px;padding:6px 10px;background:#ddd6fe;color:#5b21b6;border-radius:8px;font-size:0.82em;text-align:left;';
+    hint.innerHTML = '💡 <b>新功能：</b>撳任何「<span style="color:#16a34a;">啱</span> / <span style="color:#dc2626;text-decoration:line-through;">錯</span> / <span style="color:#6b7280;border-bottom:2px dotted #9ca3af;">漏</span> / <span style="background:#fef3c7;">多咗</span>」嘅字就會聽到嗰刻自己錄嘅音。';
+    el.appendChild(hint);
+  }
 }
 
 function _renderFluencyPanel(meta, features) {
@@ -5343,6 +5698,8 @@ window.App = {
   showPassageSelector, startAssessment, startPassageReading, startRecording, retryCurrentPassage,
   scorePassage, _stopRecordingFromUI, _resultListen, _resultReplay, _rerenderWithTranscript, _skipTranscribe,
   _startWordRepractice, _repracticeListen, _repracticeRecord,
+  // Sprint 2: click-to-replay on diff highlight spans
+  _playFromTargetToken, _playFromInsertToken,
   // Cert + result
   showCertModal, closeCertModal, showConfetti,
   // My progress
