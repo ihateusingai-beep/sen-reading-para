@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'mix-mode @ 2026-06-19';
+  window.__BUILD_ID = 'tts-polish @ 2026-06-26';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -2352,13 +2352,20 @@ const TTS_CONFIG = {
 let _ttsAudioBuffer = null;             // AudioBuffer for current passage's TTS
 let _ttsTokenTimes = null;              // [{ startSec, endSec }] per target token
 let _ttsLoadedForId = null;             // passage.id that the buffer was loaded for
-let _ttsLoadingPromise = null;          // dedup concurrent loads
+let _ttsLoadingPromise = null;          // dedup concurrent loads (same passage)
+let _ttsLoadingPassageId = null;        // passage.id the in-flight load is for (stale-load guard)
 let _ttsCurrentSource = null;           // active TTS source (separate from user source)
 // One-shot: which target idx's TTS to chain after the current user audio
 // ends naturally. Set by _playFromTargetToken, consumed by _playAudioSegment's
 // onended handler. Reset to -1 on a new click (no stale chain leaks across
 // rapid back-to-back clicks).
 let _pendingTtsChainIdx = -1;
+// Sprint 5 Bug B: target idx to auto-play TTS for once the load resolves
+// (used when the user clicked a diff span BEFORE the TTS finished loading).
+// Cleared on every new click so a stale auto-replay doesn't fire after the
+// user moved on. Fires from _playTtsAutoReplay() — both from the load
+// promise's .then AND from the user audio's onended handler.
+let _pendingTtsAutoReplayIdx = -1;
 
 // Play mode for click-to-replay + TTS. Sprint 3 default is "chain" (user
 // audio first, then TTS on natural end). Sprint 4 adds "mix" — both play
@@ -2382,17 +2389,25 @@ function _setPlayMode(mode) {
 }
 
 // Fetch + decode + index the TTS audio for a passage. Returns the cached
-// values on hit, fetches on miss, dedups concurrent calls. Resolves to
-// { audioBuffer, tokenTimes } on success or null on failure (file missing,
-// decode error, etc.). Never throws — failure is silent so user audio path
-// remains unaffected.
+// values on hit, fetches on miss, dedups SAME-passage concurrent calls.
+// Resolves to { audioBuffer, tokenTimes } on success or null on failure
+// (file missing, decode error, etc.). Never throws — failure is silent so
+// user audio path remains unaffected.
+//
+// Sprint 5: stale-load guard — if a different passage's load is in-flight
+// when this is called, kick off a new load (don't dedup). The stale check
+// after the decode await catches the previous load and discards it.
 async function _loadTtsForPassage(passage) {
   if (!passage || !passage.id) return null;
   // Same passage already loaded — reuse (don't re-fetch)
   if (_ttsAudioBuffer && _ttsLoadedForId === passage.id) {
     return { audioBuffer: _ttsAudioBuffer, tokenTimes: _ttsTokenTimes };
   }
-  if (_ttsLoadingPromise) return _ttsLoadingPromise;
+  // Dedup: same passage's load is in-flight → wait on its promise
+  if (_ttsLoadingPromise && _ttsLoadingPassageId === passage.id) {
+    return _ttsLoadingPromise;
+  }
+  _ttsLoadingPassageId = passage.id;
   _ttsLoadingPromise = (async () => {
     try {
       const url = TTS_CONFIG.baseUrl + encodeURIComponent(passage.id) + '.mp3?v=' + TTS_CONFIG.version;
@@ -2409,6 +2424,13 @@ async function _loadTtsForPassage(passage) {
       const decodeCtx = new AudioCtx();
       const buf = await decodeCtx.decodeAudioData(arrayBuf.slice(0));
       decodeCtx.close();
+      // Sprint 5 stale-load guard: if a different passage's load superseded
+      // us during the await (or _clearTtsCache reset _ttsLoadingPassageId),
+      // discard this result so we don't overwrite the current passage's cache.
+      if (_ttsLoadingPassageId !== passage.id) {
+        __debug.log('tts.stale', { wanted: passage.id, current: _ttsLoadingPassageId });
+        return null;
+      }
       // Reuse the same _detectWordBoundaries + _buildUserTokenTimes that
       // Sprint 2 uses for user audio. The result is one time-slice per
       // target token in the passage.
@@ -2427,19 +2449,29 @@ async function _loadTtsForPassage(passage) {
       console.warn('[tts] load failed', e);
       return null;
     } finally {
-      _ttsLoadingPromise = null;
+      // Only clear loading state if we're still the current load
+      if (_ttsLoadingPassageId === passage.id) {
+        _ttsLoadingPromise = null;
+        _ttsLoadingPassageId = null;
+      }
     }
   })();
   return _ttsLoadingPromise;
 }
 
-// Clear the TTS cache (e.g. on passage change or error). Does NOT stop any
-// in-flight TTS source — call _stopTts() first if needed.
+// Clear the TTS cache (e.g. on passage change or error). Invalidates any
+// in-flight TTS load — its stale check will discard the result so it
+// doesn't overwrite a newer passage's cache. Does NOT stop any in-flight
+// TTS playback source — call _stopTts() first if needed.
 function _clearTtsCache() {
   _ttsAudioBuffer = null;
   _ttsTokenTimes = null;
   _ttsLoadedForId = null;
   _pendingTtsChainIdx = -1;
+  _pendingTtsAutoReplayIdx = -1;
+  // Invalidate any in-flight load (stale check discards its result)
+  _ttsLoadingPromise = null;
+  _ttsLoadingPassageId = null;
 }
 
 // Stop any in-flight TTS playback. Safe to call when nothing is playing.
@@ -2735,8 +2767,17 @@ function _playAudioSegment(audioBuffer, startSec, endSec) {
     // the new click has already set its own chain, so don't trigger TTS.
     if (_replayCurrentSource === src) {
       _replayCurrentSource = null;
-      // Chain TTS if pending
-      if (_pendingTtsChainIdx >= 0 && _ttsAudioBuffer && _ttsTokenTimes && _ttsTokenTimes[_pendingTtsChainIdx]) {
+      // Sprint 5 Bug B: if TTS finished loading during this user-audio playback
+      // (and the click happened BEFORE the load resolved), auto-replay TTS now.
+      // Takes priority over the chain path because auto-replay covers the
+      // click-while-loading case, while chain covers the click-after-loaded case.
+      if (_pendingTtsAutoReplayIdx >= 0 && _ttsAudioBuffer && _ttsTokenTimes && _ttsTokenTimes[_pendingTtsAutoReplayIdx]) {
+        const autoIdx = _pendingTtsAutoReplayIdx;
+        _pendingTtsAutoReplayIdx = -1;
+        _pendingTtsChainIdx = -1;  // avoid double-fire
+        _playTtsSegment(_ttsTokenTimes[autoIdx].startSec, _ttsTokenTimes[autoIdx].endSec);
+      } else if (_pendingTtsChainIdx >= 0 && _ttsAudioBuffer && _ttsTokenTimes && _ttsTokenTimes[_pendingTtsChainIdx]) {
+        // Chain TTS if pending
         const ttsIdx = _pendingTtsChainIdx;
         _pendingTtsChainIdx = -1;
         _playTtsSegment(_ttsTokenTimes[ttsIdx].startSec, _ttsTokenTimes[ttsIdx].endSec);
@@ -2756,6 +2797,10 @@ function _playAudioSegment(audioBuffer, startSec, endSec) {
 // - Sprint 3 "chain" mode: user audio first, then TTS chained on natural end
 // - Sprint 4 "mix" mode: both play simultaneously (sub-frame synced via
 //   shared startAt = ctx.currentTime + 0.05)
+// - Sprint 5 Bug B fix: if TTS isn't loaded yet when the user clicks (the
+//   first-click-after-page-load race), kick off a load and auto-replay TTS
+//   for the SAME target idx once the load resolves. Without this, the user
+//   hears only their audio and silently misses the model pronunciation.
 function _playFromTargetToken(targetIdx) {
   const ctx = _lastScoreContext;
   if (!ctx || !ctx.audioBuffer || !ctx.targetIdxToTime) {
@@ -2779,21 +2824,70 @@ function _playFromTargetToken(targetIdx) {
     el.style.outlineOffset = '2px';
     setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, flashMs);
   }
-  // Branch on play mode
+  // Sprint 5 Bug B: TTS not loaded yet → kick off load + auto-replay TTS for
+  // this same target idx when it resolves. If a load is already in-flight
+  // (dedup returns its promise), we still hook the .then so the user gets
+  // the auto-play. If the TTS file is missing (custom teacher passage), the
+  // load resolves with null and we silently degrade — user audio still plays.
+  const ttsReady = ttsT && _ttsAudioBuffer;
+  if (!ttsReady && ctx.passage && ctx.passage.id) {
+    const loadPromise = _loadTtsForPassage(ctx.passage);
+    if (loadPromise && typeof loadPromise.then === 'function') {
+      showToast('⏳ TTS 載入中，完成會自動接住播');
+      _pendingTtsAutoReplayIdx = targetIdx;  // supersedes any prior auto-replay
+      loadPromise.then((loaded) => {
+        if (!loaded) {
+          // TTS file missing (custom passage) — silently clear auto-replay
+          if (_pendingTtsAutoReplayIdx === targetIdx) _pendingTtsAutoReplayIdx = -1;
+          return;
+        }
+        // If user clicked another span meanwhile, abandon this auto-replay
+        if (_pendingTtsAutoReplayIdx !== targetIdx) return;
+        // Try to fire now; will skip if user/TTS is mid-playback, and the
+        // onended handler in _playAudioSegment will pick it up next turn.
+        _playTtsAutoReplay(targetIdx);
+      });
+    }
+  }
+  // Branch on play mode (TTS may or may not be ready — Bug B path above
+  // ensures the user audio plays synchronously and TTS auto-fires later)
   if (_playMode === 'mix') {
-    // Sprint 4: simultaneous mix — both sources scheduled at same startAt
-    _playMixedSegment(
-      ctx.audioBuffer, entry.time,
-      _ttsAudioBuffer, ttsT
-    );
+    if (ttsReady) {
+      // Sprint 4: simultaneous mix — both sources scheduled at same startAt
+      _playMixedSegment(
+        ctx.audioBuffer, entry.time,
+        _ttsAudioBuffer, ttsT
+      );
+    } else {
+      // Sprint 5: TTS not ready → degrade to chain-like behavior. User audio
+      // plays now; TTS will auto-replay via _pendingTtsAutoReplayIdx once
+      // the load resolves (from the .then above or the user audio's onended).
+      _stopTts();
+      _pendingTtsChainIdx = -1;  // clear stale chain from any previous click
+      _playAudioSegment(ctx.audioBuffer, entry.time.startSec, entry.time.endSec);
+    }
   } else {
     // Sprint 3 chain mode: user audio first, TTS chained on natural end.
     // Stop in-flight TTS so chain restarts cleanly. _pendingTtsChainIdx
     // is consumed by _playAudioSegment's onended handler.
     _stopTts();
-    _pendingTtsChainIdx = (ttsT && _ttsAudioBuffer) ? targetIdx : -1;
+    _pendingTtsChainIdx = ttsReady ? targetIdx : -1;
     _playAudioSegment(ctx.audioBuffer, entry.time.startSec, entry.time.endSec);
   }
+}
+
+// Sprint 5 Bug B helper: auto-play TTS for the pending auto-replay target.
+// Idempotent — early-exits if state changed (different click, no TTS, or
+// playback still in progress). Safe to call from both the load promise's
+// .then AND from the user audio's onended handler; whichever fires first
+// wins and clears _pendingTtsAutoReplayIdx.
+function _playTtsAutoReplay(targetIdx) {
+  if (_pendingTtsAutoReplayIdx !== targetIdx) return;
+  if (!_ttsAudioBuffer || !_ttsTokenTimes || !_ttsTokenTimes[targetIdx]) return;
+  if (_replayCurrentSource || _ttsCurrentSource) return;  // wait for current playback to end
+  _pendingTtsAutoReplayIdx = -1;
+  const tt = _ttsTokenTimes[targetIdx];
+  _playTtsSegment(tt.startSec, tt.endSec);
 }
 
 // Click handler for inserted tokens (the "多咗讀" yellow spans).
@@ -3050,6 +3144,12 @@ function scorePassage(transcript, opts) {
       // TTS file is missing (custom teacher-added passage), the click handler
       // degrades gracefully — user audio plays, no TTS chain, no error.
       if (p && p.id) {
+        // Sprint 5 Bug A fix: clear the previous passage's TTS cache BEFORE
+        // kicking off the new load. Without this, decoding a fresh passage's
+        // TTS would leak the previous passage's AudioBuffer (each ~1-3MB)
+        // until the next passage switch. _clearTtsCache also invalidates any
+        // in-flight load (stale check discards its result).
+        _clearTtsCache();
         _loadTtsForPassage(p).catch(() => {});  // fire-and-forget; _loadTtsForPassage never throws
       }
 
@@ -3264,11 +3364,11 @@ function _renderDiffHighlight(target, align, transcript) {
         ? `onclick="App._playFromTargetToken(${tokenIdx})"`
         : (replayable && op.op === 'del' ? `onclick="App._playFromTargetToken(${tokenIdx})"` : '');
       if (op.op === 'match') {
-        html += `<span ${dataAttr} ${onclickAttr} style="${cursorStyle}color:#16a34a;background:#dcfce7;padding:1px 3px;border-radius:4px;margin:0 1px;">${_e(ch)}</span>`;
+        html += `<span ${dataAttr} ${onclickAttr} style="${cursorStyle}color:#16a34a;background:#dcfce7;padding:1px 3px;border-radius:4px;margin:0 1px;" title="撳聽 — 自己錄音 + model 標準發音">${_e(ch)}</span>`;
       } else if (op.op === 'sub') {
-        html += `<span ${dataAttr} ${onclickAttr} style="${cursorStyle}color:#dc2626;background:#fee2e2;padding:1px 3px;border-radius:4px;margin:0 1px;text-decoration:line-through;" title="你讀咗「${_e(op.a)}」${canReplay ? ' — 撳聽自己' : ''}">${_e(ch)}</span>`;
+        html += `<span ${dataAttr} ${onclickAttr} style="${cursorStyle}color:#dc2626;background:#fee2e2;padding:1px 3px;border-radius:4px;margin:0 1px;text-decoration:line-through;" title="你讀咗「${_e(op.a)}」${canReplay ? ' — 撳聽自己 + model 標準發音' : ''}">${_e(ch)}</span>`;
       } else if (op.op === 'del') {
-        html += `<span ${dataAttr} ${onclickAttr} style="${cursorStyle}color:#6b7280;background:#f3f4f6;padding:1px 3px;border-radius:4px;margin:0 1px;border-bottom:2px dotted #9ca3af;" title="${canReplay ? '撳聽（會話「漏咗讀」）' : '漏咗讀'}">${_e(ch)}</span>`;
+        html += `<span ${dataAttr} ${onclickAttr} style="${cursorStyle}color:#6b7280;background:#f3f4f6;padding:1px 3px;border-radius:4px;margin:0 1px;border-bottom:2px dotted #9ca3af;" title="${canReplay ? '撳聽（會話「漏咗讀」），model 標準發音會自動播' : '漏咗讀'}">${_e(ch)}</span>`;
       } else {
         html += _e(ch);
       }
