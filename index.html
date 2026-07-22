@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'tts-custom-content-c1 @ 2026-07-22';
+  window.__BUILD_ID = 'tts-custom-content-c2 @ 2026-07-22';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -389,6 +389,52 @@ button:active { transform:scale(0.95); }
     </div>
   </div>
 </div>
+<!-- Custom Content Modal (Sprint 6) -->
+<div id="customContentModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:10001;overflow:auto;">
+  <div style="background:#1a1a2e;border:3px solid #f59e0b;border-radius:20px;max-width:480px;margin:40px auto;padding:24px;color:#fff;">
+    <h3 id="customContentModalTitle" style="color:#f59e0b;text-align:center;margin-bottom:20px;">📝 新增詞彙 / 短文</h3>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <div>
+        <label style="font-size:0.95em;color:rgba(255,255,255,0.7);display:block;margin-bottom:6px;">類型</label>
+        <div style="display:flex;gap:8px;">
+          <label style="flex:1;background:rgba(255,255,255,0.05);padding:10px;border-radius:10px;cursor:pointer;display:flex;align-items:center;gap:8px;">
+            <input type="radio" name="ccm_type" value="vocab" checked onchange="App._updateCustomContentTypeHint()">
+            <span style="font-size:0.95em;">詞彙（1-6 字）</span>
+          </label>
+          <label style="flex:1;background:rgba(255,255,255,0.05);padding:10px;border-radius:10px;cursor:pointer;display:flex;align-items:center;gap:8px;">
+            <input type="radio" name="ccm_type" value="passage" onchange="App._updateCustomContentTypeHint()">
+            <span style="font-size:0.95em;">短文（10-50 字）</span>
+          </label>
+        </div>
+      </div>
+      <div>
+        <label style="font-size:0.95em;color:rgba(255,255,255,0.7);display:block;margin-bottom:6px;">文字 <span style="color:#ef4444;">*</span></label>
+        <textarea id="ccm_text" rows="2" maxlength="100" placeholder="輸入要練習嘅文字" style="width:100%;font-size:1.2em;padding:12px;border-radius:10px;border:2px solid #555;background:#222;color:#fff;resize:vertical;font-family:inherit;line-height:1.4;" oninput="App._updateCustomContentCharCount()"></textarea>
+        <div id="ccm_char_count" style="font-size:0.85em;color:rgba(255,255,255,0.6);text-align:right;margin-top:4px;">0 / 6</div>
+      </div>
+      <div>
+        <label style="font-size:0.95em;color:rgba(255,255,255,0.7);display:block;margin-bottom:6px;">語音</label>
+        <div style="display:flex;gap:8px;">
+          <label style="flex:1;background:rgba(255,255,255,0.05);padding:10px;border-radius:10px;cursor:pointer;display:flex;align-items:center;gap:8px;">
+            <input type="radio" name="ccm_voice" value="zh-HK-male" checked>
+            <span style="font-size:0.95em;">廣東話男聲</span>
+          </label>
+          <label style="flex:1;background:rgba(255,255,255,0.05);padding:10px;border-radius:10px;cursor:pointer;display:flex;align-items:center;gap:8px;">
+            <input type="radio" name="ccm_voice" value="zh-HK-female">
+            <span style="font-size:0.95em;">廣東話女聲</span>
+          </label>
+        </div>
+      </div>
+      <div>
+        <button onclick="App._previewCustomContentVoice()" style="width:100%;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:44px;">🔊 試聽</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:20px;">
+      <button onclick="App.saveCustomContentFromModal()" style="flex:1;background:#22c55e;font-size:1.1em;padding:14px;">💾 儲存</button>
+      <button onclick="App.closeCustomContentModal()" style="flex:1;background:#666;font-size:1.1em;padding:14px;">取消</button>
+    </div>
+  </div>
+</div>
 <!-- Student Edit Modal -->
 <div id="studentModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:10000;overflow:auto;">
   <div style="background:#1a1a2e;border:3px solid #f59e0b;border-radius:20px;max-width:480px;margin:40px auto;padding:24px;color:#fff;">
@@ -706,6 +752,219 @@ function _getCustomItemVoiceLabel(voiceId) {
 function _formatCustomItemTextPreview(item) {
   if (item.type === 'vocab') return item.text;
   return item.text.length > 30 ? item.text.slice(0, 30) + '…' : item.text;
+}
+
+// ================== CUSTOM CONTENT UI (Sprint 6 commit 2) ==================
+let _editingCustomItemId = null;
+let _customContentCharCountRaf = null;
+
+function _renderCustomContentList() {
+  const container = document.getElementById('customContentList');
+  if (!container) return;
+  const items = (state.customContent?.items || []).slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  if (items.length === 0) {
+    container.innerHTML = `<div style="text-align:center;padding:24px;color:rgba(255,255,255,0.5);font-size:0.9em;">尚未加入任何詞彙或短文。撳「＋ 新增」開始。</div>`;
+  } else {
+    container.innerHTML = items.map(it => {
+      const ttsIcon = it.ttsStatus === 'ready' ? '✅' : (it.ttsStatus === 'failed' ? '⚠️' : '⏳');
+      const ttsLabel = it.ttsStatus === 'ready' ? 'TTS 已生成' : (it.ttsStatus === 'failed' ? 'TTS 失敗 · 撳重試' : 'TTS 生成中');
+      const voiceLabel = _getCustomItemVoiceLabel(it.voiceId);
+      const typeLabel = it.type === 'vocab' ? '詞彙' : '短文';
+      const typeColor = it.type === 'vocab' ? '#22c55e' : '#0ea5e9';
+      return `
+        <div data-custom-id="${_e(it.id)}" style="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,0.05);border-radius:10px;padding:10px;margin-bottom:6px;">
+          <span style="background:${typeColor};color:#fff;font-size:0.78em;padding:2px 8px;border-radius:12px;flex-shrink:0;">${typeLabel}</span>
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:bold;font-size:1.05em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_e(it.text)}</div>
+            <div style="font-size:0.8em;color:rgba(255,255,255,0.55);">${_e(voiceLabel)} · ${ttsIcon} ${_e(ttsLabel)}</div>
+          </div>
+          <button onclick="App._previewCustomItem('${_e(it.id)}')" style="background:#0ea5e9;min-height:36px;padding:6px 10px;font-size:0.9em;flex-shrink:0;" title="預聽">🔊</button>
+          ${it.ttsStatus === 'failed' ? `<button onclick="App.retryCustomContentTTS('${_e(it.id)}')" style="background:#f59e0b;min-height:36px;padding:6px 10px;font-size:0.9em;flex-shrink:0;" title="重試 TTS">↻</button>` : ''}
+          <button onclick="App.editCustomContentItem('${_e(it.id)}')" style="background:#0ea5e9;min-height:36px;padding:6px 10px;font-size:0.9em;flex-shrink:0;" title="編輯">✏️</button>
+          <button onclick="App.deleteCustomContentItem('${_e(it.id)}')" style="background:#dc2626;min-height:36px;padding:6px 10px;font-size:0.9em;flex-shrink:0;" title="刪除">🗑</button>
+        </div>
+      `;
+    }).join('');
+  }
+  // Quota + count display
+  const quotaEl = document.getElementById('customContentQuota');
+  if (quotaEl) {
+    const bytes = _customContentBytes();
+    const pct = (bytes / (5 * 1024 * 1024) * 100).toFixed(1);
+    const itemCount = items.length;
+    const vocabCount = items.filter(it => it.type === 'vocab').length;
+    const passageCount = items.filter(it => it.type === 'passage').length;
+    quotaEl.textContent = `Storage: ${(bytes / 1024).toFixed(1)}KB / 5MB (${pct}%) · 共 ${itemCount} 個項目（${vocabCount} 詞彙 + ${passageCount} 短文）`;
+  }
+}
+
+function openCustomContentModal() {
+  _editingCustomItemId = null;
+  document.getElementById('customContentModalTitle').textContent = '📝 新增詞彙 / 短文';
+  const typeVocab = document.querySelector('input[name="ccm_type"][value="vocab"]');
+  const voiceMale = document.querySelector('input[name="ccm_voice"][value="zh-HK-male"]');
+  if (typeVocab) typeVocab.checked = true;
+  if (voiceMale) voiceMale.checked = true;
+  document.getElementById('ccm_text').value = '';
+  _updateCustomContentCharCount();
+  document.getElementById('customContentModal').style.display = 'block';
+  setTimeout(() => document.getElementById('ccm_text').focus(), 100);
+}
+
+function editCustomContentItem(id) {
+  const it = _getCustomItemById(id);
+  if (!it) { showToast('❌ 找不到項目'); return; }
+  _editingCustomItemId = id;
+  document.getElementById('customContentModalTitle').textContent = '✏️ 編輯詞彙 / 短文';
+  const typeEl = document.querySelector(`input[name="ccm_type"][value="${it.type}"]`);
+  const voiceEl = document.querySelector(`input[name="ccm_voice"][value="${it.voiceId}"]`);
+  if (typeEl) typeEl.checked = true;
+  if (voiceEl) voiceEl.checked = true;
+  document.getElementById('ccm_text').value = it.text;
+  _updateCustomContentCharCount();
+  document.getElementById('customContentModal').style.display = 'block';
+}
+
+function closeCustomContentModal() {
+  document.getElementById('customContentModal').style.display = 'none';
+  _editingCustomItemId = null;
+}
+
+function _updateCustomContentTypeHint() {
+  _updateCustomContentCharCount();
+}
+
+function _updateCustomContentCharCount() {
+  if (_customContentCharCountRaf) cancelAnimationFrame(_customContentCharCountRaf);
+  _customContentCharCountRaf = requestAnimationFrame(() => {
+    const textEl = document.getElementById('ccm_text');
+    if (!textEl) return;
+    const text = textEl.value;
+    const typeEl = document.querySelector('input[name="ccm_type"]:checked');
+    const type = typeEl ? typeEl.value : 'vocab';
+    const counter = document.getElementById('ccm_char_count');
+    if (!counter) return;
+    if (type === 'vocab') {
+      const cnChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+      const latinTokens = (text.match(/[A-Za-z0-9]+/g) || []).length;
+      const total = cnChars + latinTokens;
+      counter.textContent = `${total} / ${_CUSTOM_CONTENT_VOCAB_MAX}`;
+      counter.style.color = (total < _CUSTOM_CONTENT_VOCAB_MIN || total > _CUSTOM_CONTENT_VOCAB_MAX) ? '#ef4444' : 'rgba(255,255,255,0.6)';
+    } else {
+      counter.textContent = `${text.length} / ${_CUSTOM_CONTENT_PASSAGE_MAX}`;
+      counter.style.color = (text.length < _CUSTOM_CONTENT_PASSAGE_MIN || text.length > _CUSTOM_CONTENT_PASSAGE_MAX) ? '#ef4444' : 'rgba(255,255,255,0.6)';
+    }
+  });
+}
+
+function saveCustomContentFromModal() {
+  const text = document.getElementById('ccm_text').value;
+  const typeEl = document.querySelector('input[name="ccm_type"]:checked');
+  const voiceEl = document.querySelector('input[name="ccm_voice"]:checked');
+  const type = typeEl ? typeEl.value : 'vocab';
+  const voiceId = voiceEl ? voiceEl.value : 'zh-HK-male';
+  const validation = _validateCustomItemInput({ type, text, voiceId });
+  if (!validation.ok) { showToast('❌ ' + validation.error); return; }
+  if (_isCustomItemDuplicate(validation, _editingCustomItemId)) {
+    showToast('❌ 已存在相同項目（同文字 + 同語音）');
+    return;
+  }
+  let r;
+  if (_editingCustomItemId) {
+    // Editing invalidates existing TTS cache (text/voice may have changed).
+    r = _updateCustomItem(_editingCustomItemId, { type: validation.type, text: validation.text, voiceId: validation.voiceId, ttsStatus: 'pending', ttsAudioBase64: null, ttsTokenTimes: null });
+  } else {
+    r = _addCustomItem(validation);
+  }
+  if (!r.ok) {
+    if (r.error === 'QUOTA_EXCEEDED') showToast('❌ 儲存空間不足，請刪除部分項目');
+    else showToast('❌ 儲存失敗：' + (r.message || r.error));
+    return;
+  }
+  closeCustomContentModal();
+  state.customContent = _loadCustomContentStore();
+  _renderCustomContentList();
+  showToast(_editingCustomItemId ? '✅ 已更新' : '✅ 已加入');
+  if (r.warn) showToast('⚠️ 儲存空間已用 80% 以上，建議匯出 / 刪除');
+  // Trigger async TTS pre-gen (commit 3 will implement _pregenCustomItemTTS).
+  if (typeof _pregenCustomItemTTS === 'function') {
+    _pregenCustomItemTTS(r.item.id);
+  }
+}
+
+function deleteCustomContentItem(id) {
+  showConfirm('確定刪除呢個項目？', () => {
+    const r = _deleteCustomItem(id);
+    if (!r.ok) { showToast('❌ 刪除失敗'); return; }
+    state.customContent = _loadCustomContentStore();
+    _renderCustomContentList();
+    showToast('🗑 已刪除');
+  });
+}
+
+function confirmClearAllCustomContent() {
+  if (!state.customContent || state.customContent.items.length === 0) {
+    showToast('冇項目可清空');
+    return;
+  }
+  // 2-step confirm: first prompt, then re-prompt with stronger wording.
+  showConfirm('⚠️ 確定清空全部自訂詞彙同短文？此操作無法復原。', () => {
+    showConfirm('🚨 再次確認：清空後所有 TTS 緩存都會丟失。確定？', () => {
+      const r = _clearAllCustomContent();
+      if (!r.ok) { showToast('❌ 清空失敗'); return; }
+      state.customContent = _loadCustomContentStore();
+      _renderCustomContentList();
+      showToast('🗑 已清空全部');
+    });
+  });
+}
+
+function _previewCustomContentVoice() {
+  const text = document.getElementById('ccm_text').value.trim();
+  if (!text) { showToast('❌ 請先輸入文字'); return; }
+  if (!('speechSynthesis' in window)) { showToast('❌ 瀏覽器不支援 TTS'); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'zh-HK';
+  u.rate = 0.85;
+  const voiceEl = document.querySelector('input[name="ccm_voice"]:checked');
+  const voiceId = voiceEl ? voiceEl.value : 'zh-HK-male';
+  const voice = _findSpeechSynthesisVoice(voiceId);
+  if (voice) u.voice = voice;
+  speechSynthesis.speak(u);
+}
+
+function _previewCustomItem(id) {
+  const it = _getCustomItemById(id);
+  if (!it) return;
+  if (!('speechSynthesis' in window)) { showToast('❌ 瀏覽器不支援 TTS'); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(it.text);
+  u.lang = 'zh-HK';
+  u.rate = 0.85;
+  const voice = _findSpeechSynthesisVoice(it.voiceId);
+  if (voice) u.voice = voice;
+  speechSynthesis.speak(u);
+}
+
+function _findSpeechSynthesisVoice(voiceId) {
+  if (!('speechSynthesis' in window)) return null;
+  const voices = speechSynthesis.getVoices();
+  if (voices.length === 0) return null;
+  if (voiceId === 'zh-HK-female') {
+    return voices.find(v => v.lang === 'zh-HK' && /female|女/i.test(v.name)) ||
+           voices.find(v => v.lang === 'zh-HK') || null;
+  }
+  // zh-HK-male (default): first zh-HK voice. Browser usually has only 1 zh-HK voice.
+  return voices.find(v => v.lang === 'zh-HK') || null;
+}
+
+function retryCustomContentTTS(id) {
+  if (typeof _pregenCustomItemTTS !== 'function') {
+    showToast('⚠️ TTS 預生成未啟用（Sprint 6 c3 之後）');
+    return;
+  }
+  _pregenCustomItemTTS(id);
 }
 
 // ================== DEBUG OVERLAY ==================
@@ -4374,6 +4633,16 @@ function renderTeacherEdit() {
       </div>
     </div>
     <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;">
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📝 自訂詞彙 / 短文</p>
+      <p style="color:rgba(255,255,255,0.7);font-size:0.85em;margin-bottom:12px;">為學生加入短詞（1-6 字）或者短文（10-50 字）作發音練習。短詞用 TTS 對比；短文用 4-dim 評分。</p>
+      <div id="customContentList" style="max-height:400px;overflow:auto;margin-bottom:8px;"></div>
+      <div style="display:flex;gap:8px;">
+        <button onclick="App.openCustomContentModal()" style="flex:1;background:#7c3aed;font-size:1em;padding:10px;min-height:44px;">＋ 新增</button>
+        <button onclick="App.confirmClearAllCustomContent()" style="background:#dc2626;font-size:0.95em;padding:10px;min-height:44px;">🗑 清空</button>
+      </div>
+      <div id="customContentQuota" style="font-size:0.8em;color:rgba(255,255,255,0.55);margin-top:8px;"></div>
+    </div>
+    <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:14px;">
       <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">📦 備份/分享</p>
       <div style="display:flex;gap:8px;margin-bottom:8px;">
         <button onclick="App.exportPassagesJson()" style="flex:1;background:#0ea5e9;font-size:1em;padding:12px;min-height:50px;">⬇️ 匯出 JSON</button>
@@ -4385,6 +4654,7 @@ function renderTeacherEdit() {
   `;
   renderAdminTypeList();
   renderPassageList();
+  _renderCustomContentList();
 }
 
 function renderTeacherSettings() {
@@ -6267,7 +6537,13 @@ window.App = {
   // Helpers
   _e, _tierFromScore, _scoreColor, _sanitizeProgress, _migrateIfNeeded,
   // Debug
-  toggleDebugMode, _updateDebugToggleUI
+  toggleDebugMode, _updateDebugToggleUI,
+  // Custom content (Sprint 6)
+  openCustomContentModal, closeCustomContentModal, saveCustomContentFromModal,
+  editCustomContentItem, deleteCustomContentItem, confirmClearAllCustomContent,
+  retryCustomContentTTS,
+  _updateCustomContentTypeHint, _updateCustomContentCharCount,
+  _previewCustomContentVoice, _previewCustomItem, _renderCustomContentList
 };
 // Kick off: start the SPA after the API surface is mounted.
 init();
