@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'tts-custom-content-c6 @ 2026-07-22';
+  window.__BUILD_ID = 'tts-custom-content-hotfix @ 2026-07-22';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -3150,6 +3150,8 @@ let _ttsTokenTimes = null;              // [{ startSec, endSec }] per target tok
 let _ttsLoadedForId = null;             // passage.id that the buffer was loaded for
 let _ttsLoadingPromise = null;          // dedup concurrent loads (same passage)
 let _ttsLoadingPassageId = null;        // passage.id the in-flight load is for (stale-load guard)
+let _ttsMissedForId = null;             // passage.id that returned 404 (skip re-fetch until TTL)
+let _ttsMissTimeout = null;             // setTimeout handle for _ttsMissedForId TTL
 let _ttsCurrentSource = null;           // active TTS source (separate from user source)
 // One-shot: which target idx's TTS to chain after the current user audio
 // ends naturally. Set by _playFromTargetToken, consumed by _playAudioSegment's
@@ -3195,6 +3197,11 @@ function _setPlayMode(mode) {
 // after the decode await catches the previous load and discards it.
 async function _loadTtsForPassage(passage) {
   if (!passage || !passage.id) return null;
+  // Skip known misses (custom passage TTS file doesn't exist by design;
+  // default passage 404 should retry after TTL). See _markTtsMiss below.
+  if (_ttsMissedForId === passage.id) {
+    return null;
+  }
   // Same passage already loaded — reuse (don't re-fetch)
   if (_ttsAudioBuffer && _ttsLoadedForId === passage.id) {
     return { audioBuffer: _ttsAudioBuffer, tokenTimes: _ttsTokenTimes };
@@ -3209,7 +3216,14 @@ async function _loadTtsForPassage(passage) {
       const url = TTS_CONFIG.baseUrl + encodeURIComponent(passage.id) + '.mp3?v=' + TTS_CONFIG.version;
       const resp = await fetch(url);
       if (!resp.ok) {
-        __debug.log('tts.miss', { passageId: passage.id, status: resp.status });
+        // 404: cache the miss to avoid fetch storm across re-renders.
+        // Custom passages (teacher-added, no TTS file generated) cache 24h —
+        // expected miss, no point retrying. Default passages cache 30s —
+        // unexpected miss, give it time to recover.
+        const isCustom = passage.source === 'custom' ||
+                         (typeof _isCustomPassageId === 'function' && _isCustomPassageId(passage.id));
+        _markTtsMiss(passage.id, isCustom ? 24 * 60 * 60 * 1000 : 30000);
+        __debug.log('tts.miss', { passageId: passage.id, status: resp.status, custom: isCustom });
         return null;
       }
       const arrayBuf = await resp.arrayBuffer();
@@ -3268,6 +3282,33 @@ function _clearTtsCache() {
   // Invalidate any in-flight load (stale check discards its result)
   _ttsLoadingPromise = null;
   _ttsLoadingPassageId = null;
+  // Also clear the miss cache (switching passages / explicit refresh)
+  _ttsMissedForId = null;
+  if (_ttsMissTimeout) { clearTimeout(_ttsMissTimeout); _ttsMissTimeout = null; }
+}
+
+// Mark a passage.id as a known TTS miss for ttlMs milliseconds. Stops the
+// fetch storm that happens when every render re-triggers _loadTtsForPassage
+// on a 404 (log evidence: 6 retries in 60s on 2026-07-22 sprint 6 verify).
+function _markTtsMiss(passageId, ttlMs) {
+  _ttsMissedForId = passageId;
+  if (_ttsMissTimeout) clearTimeout(_ttsMissTimeout);
+  _ttsMissTimeout = setTimeout(() => {
+    if (_ttsMissedForId === passageId) _ttsMissedForId = null;
+  }, ttlMs);
+}
+
+// Heuristic for legacy custom passages (id 'p_*' or '_DEFAULT_PASSAGES' types
+// that aren't in state.passages — but state.customContent doesn't have those).
+// Sprint 6 custom passages use 'tc-' prefix; legacy 'p_' teacher passages
+// are teacher-added via the old passageModal and have no TTS file either.
+// We treat any id that doesn't match a default seed id as custom-miss.
+function _isCustomPassageId(passageId) {
+  if (typeof passageId !== 'string') return false;
+  // Default seeds are prose-001..005 + poetry-001..005
+  if (/^(prose|poetry)-\d+$/.test(passageId)) return false;
+  // Anything else (tc-*, p_*, etc.) is teacher-added
+  return true;
 }
 
 // Stop any in-flight TTS playback. Safe to call when nothing is playing.
