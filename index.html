@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'tts-custom-content-hotfix @ 2026-07-22';
+  window.__BUILD_ID = 'vocab-default @ 2026-07-22';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -642,7 +642,8 @@ function _sanitizeCustomItem(it) {
     ttsError: typeof it.ttsError === 'string' ? it.ttsError : undefined,
     createdAt: it.createdAt || new Date().toISOString(),
     updatedAt: it.updatedAt || new Date().toISOString(),
-    lastUsedAt: it.lastUsedAt || null
+    lastUsedAt: it.lastUsedAt || null,
+    isDefault: it.isDefault === true
   };
 }
 
@@ -702,6 +703,7 @@ function _updateCustomItem(id, patch) {
   const store = _loadCustomContentStore();
   const idx = store.items.findIndex(it => it.id === id);
   if (idx < 0) return { ok: false, error: 'NOT_FOUND' };
+  if (store.items[idx].isDefault) return { ok: false, error: 'CANNOT_MODIFY_DEFAULT' };
   const merged = { ...store.items[idx], ...patch, updatedAt: new Date().toISOString() };
   const sanitized = _sanitizeCustomItem(merged);
   if (!sanitized) return { ok: false, error: 'INVALID_INPUT' };
@@ -715,6 +717,7 @@ function _deleteCustomItem(id) {
   const store = _loadCustomContentStore();
   const idx = store.items.findIndex(it => it.id === id);
   if (idx < 0) return { ok: false, error: 'NOT_FOUND' };
+  if (store.items[idx].isDefault) return { ok: false, error: 'CANNOT_DELETE_DEFAULT' };
   store.items.splice(idx, 1);
   const r = _saveCustomContentStore(store);
   if (!r.ok) return { ok: false, error: r.error, message: r.message };
@@ -786,7 +789,9 @@ let _customContentCharCountRaf = null;
 function _renderCustomContentList() {
   const container = document.getElementById('customContentList');
   if (!container) return;
-  const items = (state.customContent?.items || []).slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  // Filter out default vocab (Sprint 6 c8) — teacher manages their own custom
+  // items; default seeds are visible to students in the main passage selector.
+  const items = (state.customContent?.items || []).filter(it => !it.isDefault).slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   if (items.length === 0) {
     container.innerHTML = `<div style="text-align:center;padding:24px;color:rgba(255,255,255,0.5);font-size:0.9em;">尚未加入任何詞彙或短文。撳「＋ 新增」開始。</div>`;
   } else {
@@ -1846,16 +1851,19 @@ function showPassageSelector() {
   const container = document.getElementById('assessmentContent');
   const types = state.types;
   // Sprint 6: merge state.passages (defaults) with state.customContent.items
-  // (teacher-added vocab + passages). Custom items tagged with source='custom'
-  // and a synthesized type='vocab' or 'passage' so filter logic still works.
+  // (teacher-added vocab + passages, plus seeded _DEFAULT_VOCABS).
+  // Custom items tagged with source='custom' and a synthesized
+  // type='vocab' or 'passage' so filter logic still works. Default vocabs
+  // (isDefault=true) tagged source='default' so they show in [預設] filter
+  // but not [自訂].
   const customItems = (state.customContent?.items || []).map(it => ({
     id: it.id,
     type: it.type,                 // 'vocab' | 'passage'
     title: it.text,
-    author: '自訂',
+    author: it.isDefault ? '預設' : '自訂',
     difficulty: 1,
     text: it.text,
-    source: 'custom',
+    source: it.isDefault ? 'default' : 'custom',
     voiceId: it.voiceId,
     ttsStatus: it.ttsStatus
   }));
@@ -1896,7 +1904,7 @@ function showPassageSelector() {
     const isVocab = p.type === 'vocab';
     const type = types.find(t => t.id === p.type);
     const stars = '⭐'.repeat(p.difficulty || 1) + '☆'.repeat(3 - (p.difficulty || 1));
-    const typeLabel = isVocab ? '📝 詞彙' : (type ? `${type.icon || ''} ${type.label}` : p.type);
+    const typeLabel = isVocab ? '🔤 詞彙' : (type ? `${type.icon || ''} ${type.label}` : p.type);
     const typeColor = isVocab ? '#22c55e' : (p.type === 'poetry' ? '#7c3aed' : '#22c55e');
     const sourceBadge = isCustom ? `<span style="background:#f59e0b;color:#fff;font-size:0.7em;padding:1px 6px;border-radius:8px;margin-left:4px;">自訂</span>` : '';
     const pShort = p.text.length > 40 ? p.text.slice(0, 40) + '…' : p.text;
@@ -1925,9 +1933,9 @@ function showPassageSelector() {
   container.querySelectorAll('.vocab-card[data-passage-id]').forEach(card => {
     card.addEventListener('click', () => {
       const pid = card.dataset.passageId;
-      const source = card.dataset.source;
       const itemType = card.dataset.itemType;
-      if (source === 'custom' && itemType === 'vocab') {
+      // Vocab (default or custom) → vocab mode (TTS reference + diff)
+      if (itemType === 'vocab') {
         const it = _getCustomItemById(pid);
         if (it) startVocabPractice(it.id);
         return;
@@ -4707,7 +4715,26 @@ function showMyProgress() {
 
 // INIT — inline default data so it works without a server (file:// protocol)
 const _DEFAULT_PASSAGES = [{"id":"prose-001","type":"prose","title":"春天的校園","author":"課本選文","difficulty":1,"text":"春天的校園，花兒開了，草兒綠了。同學們在操場上跑步，做運動。陽光溫暖，微風輕輕吹過。"},{"id":"prose-002","type":"prose","title":"我的家人","author":"課本選文","difficulty":1,"text":"我的爸爸很愛我，每天送我上學。我的媽媽煮飯很好吃。我的哥哥會踢足球。我愛我的家。"},{"id":"prose-003","type":"prose","title":"快樂的一天","author":"課本選文","difficulty":1,"text":"今天是星期日，爸爸帶我去公園。我玩了鞦韆，又放了風箏。媽媽買了雪糕給我吃。這一天真開心。"},{"id":"prose-004","type":"prose","title":"下雨天","author":"課本選文","difficulty":2,"text":"外面下着大雨，小明撐着紅色的雨傘去學校。雨點打在雨傘上，發出滴滴答答的聲音。到了學校，他的鞋子和褲子都是乾的。"},{"id":"prose-005","type":"prose","title":"可愛的小狗","author":"課本選文","difficulty":2,"text":"鄰居家有一隻小狗，毛是白色的，眼睛又大又黑。它見到我時會搖尾巴，我每天都會和它玩。小狗真是人類的好朋友。"},{"id":"poetry-001","type":"poetry","title":"靜夜思","author":"李白（唐）","difficulty":1,"text":"床前明月光，疑是地上霜。舉頭望明月，低頭思故鄉。"},{"id":"poetry-002","type":"poetry","title":"詠鵝","author":"駱賓王（唐）","difficulty":1,"text":"鵝鵝鵝，曲項向天歌。白毛浮綠水，紅掌拨清波。"},{"id":"poetry-003","type":"poetry","title":"春曉","author":"孟浩然（唐）","difficulty":1,"text":"春眠不覺曉，處處聞啼鳥。夜來風雨聲，花落知多少。"},{"id":"poetry-004","type":"poetry","title":"憫農","author":"李紳（唐）","difficulty":1,"text":"鋤禾日當午，汗滴禾下土。誰知盤中餐，粒粒皆辛苦。"},{"id":"poetry-005","type":"poetry","title":"登鸛雀樓","author":"王之渙（唐）","difficulty":2,"text":"白日依山盡，黃河入海流。欲窮千里目，更上一層樓。"}];
-const _DEFAULT_TYPES = [{"id":"prose","label":"散文","description":"抒情散文、短文朗讀","enabled":true,"icon":"📖"},{"id":"poetry","label":"詩詞","description":"詩詞朗誦","enabled":true,"icon":"🪷"}];
+const _DEFAULT_TYPES = [{"id":"prose","label":"散文","description":"抒情散文、短文朗讀","enabled":true,"icon":"📖"},{"id":"poetry","label":"詩詞","description":"詩詞朗誦","enabled":true,"icon":"🪷"},{"id":"vocab","label":"詞彙","description":"單字 / 短詞發音練習","enabled":true,"icon":"🔤"}];
+// Default vocab (Sprint 6 c8). 12 common Cantonese 1-2 char words for
+// pronunciation drill. Stored in state.customContent with isDefault: true so
+// existing vocab mode (_getCustomItemById + startVocabPractice) reuses
+// without refactor. Teacher can edit or extend via the existing add modal;
+// isDefault guard prevents deletion of these seeds.
+const _DEFAULT_VOCABS = [
+  {id:'vocab-001', text:'光'},
+  {id:'vocab-002', text:'雨'},
+  {id:'vocab-003', text:'春天'},
+  {id:'vocab-004', text:'同學'},
+  {id:'vocab-005', text:'學校'},
+  {id:'vocab-006', text:'老師'},
+  {id:'vocab-007', text:'書本'},
+  {id:'vocab-008', text:'爸爸'},
+  {id:'vocab-009', text:'媽媽'},
+  {id:'vocab-010', text:'朋友'},
+  {id:'vocab-011', text:'謝謝'},
+  {id:'vocab-012', text:'你好'}
+];
 
 async function init() {
   // Load passages: try localStorage first, then inline defaults
@@ -4721,6 +4748,32 @@ async function init() {
   // Load teacher custom content (Sprint 6). Always load (even if empty) so
   // state.customContent is a stable shape for downstream code.
   state.customContent = _loadCustomContentStore();
+  // Sprint 6 c8: seed default vocabs into state.customContent (idempotent).
+  // Items tagged isDefault: true so _renderCustomContentList hides them
+  // from teacher's custom list, but showPassageSelector still merges them
+  // as 'default' source so students see them in [全部] / [預設] filter.
+  if (Array.isArray(_DEFAULT_VOCABS) && _DEFAULT_VOCABS.length > 0) {
+    const existingIds = new Set(state.customContent.items.map(it => it.id));
+    const missing = _DEFAULT_VOCABS
+      .filter(v => !existingIds.has(v.id))
+      .map(v => ({
+        id: v.id,
+        type: 'vocab',
+        text: v.text,
+        voiceId: 'zh-HK-male',
+        ttsAudioBase64: null,
+        ttsTokenTimes: null,
+        ttsStatus: 'pending',
+        createdAt: '1970-01-01T00:00:00.000Z',
+        updatedAt: '1970-01-01T00:00:00.000Z',
+        lastUsedAt: null,
+        isDefault: true
+      }));
+    if (missing.length > 0) {
+      state.customContent.items = [...state.customContent.items, ...missing];
+      _saveCustomContentStore(state.customContent);
+    }
+  }
 
   // Pre-warm TTS availability for all custom items (fire-and-forget).
   // Staggered 100ms apart to avoid races on getVoices() load.
