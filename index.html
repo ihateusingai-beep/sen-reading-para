@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'tts-custom-content @ 2026-07-22';
+  window.__BUILD_ID = 'tts-custom-content-c6 @ 2026-07-22';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -1124,14 +1124,25 @@ function _playCustomItemTTS(itemId) {
 //     Whisper expects mono. Without this, the recognizer receives
 //     duplicated channels and ~2% WER penalty.
 // ---------------------------------------------------------------------------
+// Detect iOS / iPadOS PWA standalone mode. iOS Safari 17+ in PWA context may
+// report isTypeSupported('audio/webm') as true, but MediaRecorder.start()
+// silently produces audio the browser cannot decode downstream (Whisper
+// transcribes garbage — see live-verify log 2026-07-22 sprint 6). iOS PWA
+// must use mp4/aac only.
+function _isIOSPWA() {
+  const ua = navigator.userAgent || '';
+  if (/iPad|iPhone|iPod/.test(ua)) return true;
+  // iPadOS 13+ reports as Mac with touch points
+  if (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) return true;
+  return false;
+}
+
 function pickMimeType() {
-  const candidates = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/mp4;codecs=mp4a.40.2',
-    'audio/mp4',
-    ''
-  ];
+  // iOS: skip webm entirely. Other browsers: webm first, mp4 fallback (unchanged).
+  const isIOS = _isIOSPWA();
+  const candidates = isIOS
+    ? ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', '']
+    : ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4;codecs=mp4a.40.2', 'audio/mp4', ''];
   for (const t of candidates) {
     if (t === '') return t;
     if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)) {
@@ -2058,10 +2069,10 @@ async function _vocabStartRecording() {
   }
   try {
     _vocabChunks = [];
-    const constraints = (typeof _getAudioConstraints === 'function') ? _getAudioConstraints() : { audio: true };
+    const constraints = (typeof getAudioConstraints === 'function') ? getAudioConstraints() : { audio: true };
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
     _vocabStream = stream;
-    const mimeType = (typeof _pickMimeType === 'function') ? _pickMimeType() : '';
+    const mimeType = (typeof pickMimeType === 'function') ? pickMimeType() : '';
     _vocabRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
     _vocabRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) _vocabChunks.push(e.data); };
     _vocabRecorder.onstop = () => {
