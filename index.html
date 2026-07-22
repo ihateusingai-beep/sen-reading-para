@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'tts-polish @ 2026-06-26';
+  window.__BUILD_ID = 'tts-custom-content-c1 @ 2026-07-22';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -496,7 +496,7 @@ function _scoreColor(score) {
 // / yueProgress / yueAsrEngine / yueLastStudentId / yueTeacherPassHash /
 // yueSeededDemo_v2 / yueAudioBaselines. Bump _SCHEMA_VERSION when shape changes
 // and add a migration entry in _migrateIfNeeded().
-const _SCHEMA_VERSION = 2;
+const _SCHEMA_VERSION = 3;
 const _SCHEMA_VERSION_KEY = 'yueSchemaVersion';
 
 // Defensive sanitize a single student's progress object on load.
@@ -528,6 +528,184 @@ function _migrateIfNeeded() {
     state.progress = {};
   }
   localStorage.setItem(_SCHEMA_VERSION_KEY, String(_SCHEMA_VERSION));
+}
+
+// ================== TEACHER CUSTOM CONTENT (Sprint 6) ==================
+// localStorage: yueCustomContentV1
+// Schema: { schemaVersion: 1, items: [{ id, type, text, voiceId, ttsAudioBase64,
+//   ttsTokenTimes, ttsStatus, ttsError, createdAt, updatedAt, lastUsedAt }] }
+// Items have 'tc-' id prefix to avoid collision with default passages.
+// v2→v3 migration: no-op (new key, no existing data to migrate). Just stamp
+// schema version above.
+const _CUSTOM_CONTENT_KEY = 'yueCustomContentV1';
+const _CUSTOM_CONTENT_SCHEMA = 1;
+const _CUSTOM_CONTENT_VOICES = [
+  { id: 'zh-HK-male', label: '廣東話男聲', lang: 'zh-HK' },
+  { id: 'zh-HK-female', label: '廣東話女聲', lang: 'zh-HK' }
+];
+const _CUSTOM_CONTENT_VOCAB_MIN = 1;
+const _CUSTOM_CONTENT_VOCAB_MAX = 6;
+const _CUSTOM_CONTENT_PASSAGE_MIN = 10;
+const _CUSTOM_CONTENT_PASSAGE_MAX = 50;
+// 5MB hard cap is browser-specific. We use 5MB as the budget; warn at 80%, hard-reject at 95%.
+const _CUSTOM_CONTENT_WARN_BYTES = 4 * 1024 * 1024;
+const _CUSTOM_CONTENT_HARD_REJECT_BYTES = 4.75 * 1024 * 1024;
+
+function _genCustomItemId() {
+  return 'tc-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+}
+
+function _sanitizeCustomItem(it) {
+  if (!it || typeof it !== 'object' || typeof it.id !== 'string') return null;
+  if (typeof it.text !== 'string') return null;
+  const text = it.text.trim();
+  if (!text) return null;
+  return {
+    id: it.id,
+    type: (it.type === 'vocab' || it.type === 'passage') ? it.type : 'vocab',
+    text: text,
+    voiceId: (it.voiceId === 'zh-HK-female') ? 'zh-HK-female' : 'zh-HK-male',
+    ttsAudioBase64: typeof it.ttsAudioBase64 === 'string' ? it.ttsAudioBase64 : null,
+    ttsTokenTimes: Array.isArray(it.ttsTokenTimes) ? it.ttsTokenTimes : null,
+    ttsStatus: (it.ttsStatus === 'ready' || it.ttsStatus === 'failed' || it.ttsStatus === 'pending') ? it.ttsStatus : 'pending',
+    ttsError: typeof it.ttsError === 'string' ? it.ttsError : undefined,
+    createdAt: it.createdAt || new Date().toISOString(),
+    updatedAt: it.updatedAt || new Date().toISOString(),
+    lastUsedAt: it.lastUsedAt || null
+  };
+}
+
+function _loadCustomContentStore() {
+  try {
+    const raw = localStorage.getItem(_CUSTOM_CONTENT_KEY);
+    if (!raw) return { schemaVersion: _CUSTOM_CONTENT_SCHEMA, items: [] };
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.items)) return { schemaVersion: _CUSTOM_CONTENT_SCHEMA, items: [] };
+    parsed.schemaVersion = _CUSTOM_CONTENT_SCHEMA;
+    parsed.items = parsed.items.map(_sanitizeCustomItem).filter(Boolean);
+    return parsed;
+  } catch (e) {
+    console.warn('[customContent] load failed', e);
+    return { schemaVersion: _CUSTOM_CONTENT_SCHEMA, items: [] };
+  }
+}
+
+function _saveCustomContentStore(store) {
+  const json = JSON.stringify(store);
+  // Estimate bytes via Blob (handles multi-byte CJK correctly).
+  const bytes = new Blob([json]).size;
+  if (bytes > _CUSTOM_CONTENT_HARD_REJECT_BYTES) {
+    return { ok: false, error: 'QUOTA_EXCEEDED', bytes };
+  }
+  try {
+    localStorage.setItem(_CUSTOM_CONTENT_KEY, json);
+    return { ok: true, bytes, warn: bytes > _CUSTOM_CONTENT_WARN_BYTES };
+  } catch (e) {
+    return { ok: false, error: 'WRITE_FAILED', message: e.message };
+  }
+}
+
+function _addCustomItem(partial) {
+  const store = _loadCustomContentStore();
+  const now = new Date().toISOString();
+  const item = _sanitizeCustomItem({
+    id: _genCustomItemId(),
+    type: partial.type,
+    text: partial.text,
+    voiceId: partial.voiceId,
+    ttsStatus: 'pending',
+    ttsAudioBase64: null,
+    ttsTokenTimes: null,
+    createdAt: now,
+    updatedAt: now,
+    lastUsedAt: null
+  });
+  if (!item) return { ok: false, error: 'INVALID_INPUT' };
+  store.items.push(item);
+  const r = _saveCustomContentStore(store);
+  if (!r.ok) return { ok: false, error: r.error, message: r.message };
+  return { ok: true, item, warn: r.warn };
+}
+
+function _updateCustomItem(id, patch) {
+  const store = _loadCustomContentStore();
+  const idx = store.items.findIndex(it => it.id === id);
+  if (idx < 0) return { ok: false, error: 'NOT_FOUND' };
+  const merged = { ...store.items[idx], ...patch, updatedAt: new Date().toISOString() };
+  const sanitized = _sanitizeCustomItem(merged);
+  if (!sanitized) return { ok: false, error: 'INVALID_INPUT' };
+  store.items[idx] = sanitized;
+  const r = _saveCustomContentStore(store);
+  if (!r.ok) return { ok: false, error: r.error, message: r.message };
+  return { ok: true, item: sanitized, warn: r.warn };
+}
+
+function _deleteCustomItem(id) {
+  const store = _loadCustomContentStore();
+  const idx = store.items.findIndex(it => it.id === id);
+  if (idx < 0) return { ok: false, error: 'NOT_FOUND' };
+  store.items.splice(idx, 1);
+  const r = _saveCustomContentStore(store);
+  if (!r.ok) return { ok: false, error: r.error, message: r.message };
+  return { ok: true, warn: r.warn };
+}
+
+function _getCustomItemById(id) {
+  const store = _loadCustomContentStore();
+  return store.items.find(it => it.id === id) || null;
+}
+
+function _clearAllCustomContent() {
+  try {
+    localStorage.removeItem(_CUSTOM_CONTENT_KEY);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: 'WRITE_FAILED', message: e.message };
+  }
+}
+
+function _customContentBytes() {
+  try {
+    const raw = localStorage.getItem(_CUSTOM_CONTENT_KEY);
+    return raw ? new Blob([raw]).size : 0;
+  } catch (e) { return 0; }
+}
+
+function _validateCustomItemInput(partial) {
+  // Returns { ok: true, type, text, voiceId } or { ok: false, error }
+  if (!partial || typeof partial !== 'object') return { ok: false, error: '請輸入資料' };
+  const text = (partial.text || '').trim();
+  if (!text) return { ok: false, error: '請輸入文字' };
+  const type = (partial.type === 'passage') ? 'passage' : 'vocab';
+  if (type === 'vocab') {
+    // Vocab: count CJK chars + Latin tokens (whitespace-separated).
+    const cnChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+    const latinTokens = (text.match(/[A-Za-z0-9]+/g) || []).length;
+    const total = cnChars + latinTokens;
+    if (total < _CUSTOM_CONTENT_VOCAB_MIN) return { ok: false, error: '詞彙至少 1 個字' };
+    if (total > _CUSTOM_CONTENT_VOCAB_MAX) return { ok: false, error: `詞彙上限 ${_CUSTOM_CONTENT_VOCAB_MAX} 個字` };
+  } else {
+    if (text.length < _CUSTOM_CONTENT_PASSAGE_MIN) return { ok: false, error: `短文下限 ${_CUSTOM_CONTENT_PASSAGE_MIN} 個字` };
+    if (text.length > _CUSTOM_CONTENT_PASSAGE_MAX) return { ok: false, error: `短文上限 ${_CUSTOM_CONTENT_PASSAGE_MAX} 個字` };
+  }
+  const voiceId = (partial.voiceId === 'zh-HK-female') ? 'zh-HK-female' : 'zh-HK-male';
+  return { ok: true, type, text, voiceId };
+}
+
+function _isCustomItemDuplicate(partial, excludeId) {
+  // Same (text, voiceId) considered duplicate. Edit checks exclude self.
+  const store = _loadCustomContentStore();
+  return store.items.some(it => it.id !== excludeId && it.text === partial.text && it.voiceId === partial.voiceId);
+}
+
+function _getCustomItemVoiceLabel(voiceId) {
+  const v = _CUSTOM_CONTENT_VOICES.find(v => v.id === voiceId);
+  return v ? v.label : voiceId;
+}
+
+function _formatCustomItemTextPreview(item) {
+  if (item.type === 'vocab') return item.text;
+  return item.text.length > 30 ? item.text.slice(0, 30) + '…' : item.text;
 }
 
 // ================== DEBUG OVERLAY ==================
@@ -3880,6 +4058,10 @@ async function init() {
   } else {
     state.passages = _DEFAULT_PASSAGES;
   }
+
+  // Load teacher custom content (Sprint 6). Always load (even if empty) so
+  // state.customContent is a stable shape for downstream code.
+  state.customContent = _loadCustomContentStore();
 
   const savedTypes = localStorage.getItem('yueTypes');
   if (savedTypes) {
