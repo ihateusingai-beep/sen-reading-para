@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'tts-custom-content-c3 @ 2026-07-22';
+  window.__BUILD_ID = 'tts-custom-content-c4 @ 2026-07-22';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -1809,8 +1809,23 @@ function startAssessment() {
 function showPassageSelector() {
   const container = document.getElementById('assessmentContent');
   const types = state.types;
-  const passages = state.passages;
-  if (passages.length === 0) {
+  // Sprint 6: merge state.passages (defaults) with state.customContent.items
+  // (teacher-added vocab + passages). Custom items tagged with source='custom'
+  // and a synthesized type='vocab' or 'passage' so filter logic still works.
+  const customItems = (state.customContent?.items || []).map(it => ({
+    id: it.id,
+    type: it.type,                 // 'vocab' | 'passage'
+    title: it.text,
+    author: '自訂',
+    difficulty: 1,
+    text: it.text,
+    source: 'custom',
+    voiceId: it.voiceId,
+    ttsStatus: it.ttsStatus
+  }));
+  const defaultItems = state.passages.map(p => ({ ...p, source: 'default' }));
+  const allItems = [...defaultItems, ...customItems];
+  if (allItems.length === 0) {
     container.innerHTML = `<div style="text-align:center;padding:40px;color:#f59e0b;font-size:1.3em;">
       尚未有任何文章<br>請先到老師設定加入文章
       <button onclick="App.enterTeacherMode()" style="margin-top:16px;background:#555;font-size:1em;padding:12px 24px;">🔧 老師設定</button>
@@ -1819,42 +1834,46 @@ function showPassageSelector() {
     goTo('assessment');
     return;
   }
-  // Group passages by type
-  const byType = {};
-  passages.forEach(p => {
-    if (!byType[p.type]) byType[p.type] = [];
-    byType[p.type].push(p);
-  });
 
   let html = `<div style="max-width:700px;margin:0 auto;text-align:center;">
-    <h3 style="color:#f59e0b;margin-bottom:8px;">📖 選擇朗讀文章</h3>
-    <p style="color:rgba(255,255,255,0.7);font-size:1em;margin-bottom:24px;">點擊文章卡開始朗讀評估</p>`;
+    <h3 style="color:#f59e0b;margin-bottom:8px;">📖 選擇朗讀內容</h3>
+    <p style="color:rgba(255,255,255,0.7);font-size:1em;margin-bottom:24px;">點擊卡開始朗讀評估</p>`;
 
-  // Type filter buttons
+  // Sprint 6: Source filter (全部 / 預設 / 自訂) + type filter
   const allEnabled = types.filter(t => t.enabled);
-  if (allEnabled.length > 1) {
-    html += `<div style="display:flex;gap:8px;justify-content:center;margin-bottom:20px;flex-wrap:wrap;">`;
-    html += `<button onclick="App.filterPassages('all')" id="filterBtn_all" style="background:#7c3aed;font-size:1em;padding:10px 18px;min-height:48px;border-radius:20px;">全部</button>`;
-    allEnabled.forEach(t => {
-      html += `<button onclick="App.filterPassages('${_e(t.id)}')" id="filterBtn_${_e(t.id)}" style="background:#444;font-size:1em;padding:10px 18px;min-height:48px;border-radius:20px;">${_e(t.icon || '')} ${_e(t.label)}</button>`;
-    });
-    html += `</div>`;
+  const hasCustom = customItems.length > 0;
+  html += `<div style="display:flex;gap:6px;justify-content:center;margin-bottom:12px;flex-wrap:wrap;">`;
+  html += `<button onclick="App.filterPassages('all')" id="filterBtn_all" style="background:#7c3aed;font-size:0.95em;padding:8px 14px;min-height:40px;border-radius:18px;">全部</button>`;
+  if (hasCustom) {
+    html += `<button onclick="App.filterPassages('default')" id="filterBtn_default" style="background:#444;font-size:0.95em;padding:8px 14px;min-height:40px;border-radius:18px;">預設</button>`;
+    html += `<button onclick="App.filterPassages('custom')" id="filterBtn_custom" style="background:#444;font-size:0.95em;padding:8px 14px;min-height:40px;border-radius:18px;">自訂</button>`;
   }
+  allEnabled.forEach(t => {
+    html += `<button onclick="App.filterPassages('${_e(t.id)}')" id="filterBtn_${_e(t.id)}" style="background:#444;font-size:0.95em;padding:8px 14px;min-height:40px;border-radius:18px;">${_e(t.icon || '')} ${_e(t.label)}</button>`;
+  });
+  html += `</div>`;
 
-  // Passage grid
+  // Card grid (uses all merged items)
   html += `<div id="passageGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;max-width:700px;margin:0 auto;">`;
-  passages.forEach(p => {
+  allItems.forEach(p => {
+    const isCustom = p.source === 'custom';
+    const isVocab = p.type === 'vocab';
     const type = types.find(t => t.id === p.type);
     const stars = '⭐'.repeat(p.difficulty || 1) + '☆'.repeat(3 - (p.difficulty || 1));
-    const typeLabel = type ? `${type.icon || ''} ${type.label}` : p.type;
-    const typeColor = p.type === 'poetry' ? '#7c3aed' : '#22c55e';
+    const typeLabel = isVocab ? '📝 詞彙' : (type ? `${type.icon || ''} ${type.label}` : p.type);
+    const typeColor = isVocab ? '#22c55e' : (p.type === 'poetry' ? '#7c3aed' : '#22c55e');
+    const sourceBadge = isCustom ? `<span style="background:#f59e0b;color:#fff;font-size:0.7em;padding:1px 6px;border-radius:8px;margin-left:4px;">自訂</span>` : '';
     const pShort = p.text.length > 40 ? p.text.slice(0, 40) + '…' : p.text;
+    const cardId = isCustom ? _e(p.id) : _e(p.id);
     html += `
-      <div class="vocab-card" data-passage-id="${_e(p.id)}" style="cursor:pointer;border-color:${typeColor};">
-        <div style="background:${typeColor};color:#fff;font-size:0.85em;padding:4px 12px;border-radius:20px;display:inline-block;margin-bottom:8px;">${typeLabel}</div>
-        <div style="font-size:1.8em;font-weight:bold;color:#7c3aed;margin:8px 0;">${_e(p.title)}</div>
+      <div class="vocab-card" data-passage-id="${cardId}" data-source="${p.source}" data-item-type="${_e(p.type)}" style="cursor:pointer;border-color:${typeColor};">
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+          <span style="background:${typeColor};color:#fff;font-size:0.85em;padding:4px 12px;border-radius:20px;display:inline-block;">${typeLabel}</span>
+          ${sourceBadge}
+        </div>
+        <div style="font-size:${isVocab ? '2.4em' : '1.8em'};font-weight:bold;color:#7c3aed;margin:8px 0;line-height:1.1;">${_e(p.title)}</div>
         <div style="color:#666;font-size:1em;margin-bottom:6px;">${_e(p.author || '')}</div>
-        <div style="color:#f59e0b;font-size:1.1em;margin-bottom:8px;">${stars}</div>
+        ${isVocab ? `<div style="color:rgba(255,255,255,0.6);font-size:0.85em;margin-bottom:8px;">${_e(_getCustomItemVoiceLabel(p.voiceId))} · TTS 對比</div>` : `<div style="color:#f59e0b;font-size:1.1em;margin-bottom:8px;">${stars}</div>`}
         <div style="color:#555;font-size:0.95em;background:#f9f9f9;padding:10px;border-radius:10px;line-height:1.4;">${_e(pShort)}</div>
         <div style="color:#999;font-size:0.85em;margin-top:6px;">⏱ 錄音無時限，自行控制</div>
       </div>`;
@@ -1866,15 +1885,32 @@ function showPassageSelector() {
 
   container.innerHTML = html;
 
-  // Event delegation for passage cards
+  // Event delegation for cards
   container.querySelectorAll('.vocab-card[data-passage-id]').forEach(card => {
     card.addEventListener('click', () => {
       const pid = card.dataset.passageId;
-      const passage = state.passages.find(p => p.id === pid);
+      const source = card.dataset.source;
+      const itemType = card.dataset.itemType;
+      if (source === 'custom' && itemType === 'vocab') {
+        const it = _getCustomItemById(pid);
+        if (it) startVocabPractice(it.id);
+        return;
+      }
+      // For default passages OR custom passages: use existing 4-dim flow.
+      // Custom passages are reconstructed to fit state.passages' shape.
+      let passage = state.passages.find(p => p.id === pid);
+      if (!passage) {
+        const it = _getCustomItemById(pid);
+        if (it) {
+          passage = { id: it.id, type: it.type, title: it.text, author: '自訂', difficulty: 1, text: it.text, source: 'custom' };
+        }
+      }
       if (passage) startPassageReading(passage);
     });
   });
 
+  // Reset filter to 'all' on (re)open so user sees merged list.
+  _currentFilter = 'all';
   goTo('assessment');
 }
 
@@ -1886,15 +1922,220 @@ function filterPassages(typeId) {
     const bid = btn.id.replace('filterBtn_', '');
     btn.style.background = (bid === typeId) ? '#7c3aed' : '#444';
   });
-  // Show/hide cards
+  // Show/hide cards based on source / type filter
   document.querySelectorAll('#passageGrid .vocab-card').forEach(card => {
+    const source = card.dataset.source;
+    const itemType = card.dataset.itemType;
+    let show = false;
     if (typeId === 'all') {
-      card.style.display = '';
+      show = true;
+    } else if (typeId === 'default' || typeId === 'custom') {
+      show = source === typeId;
     } else {
-      const p = state.passages.find(pp => pp.id === card.dataset.passageId);
-      card.style.display = (p && p.type === typeId) ? '' : 'none';
+      // typeId is a passage type id (prose, poetry, vocab, passage)
+      show = itemType === typeId;
     }
+    card.style.display = show ? '' : 'none';
   });
+}
+
+// ================== VOCAB PRACTICE (Sprint 6 commit 4) ==================
+// Vocab items use a simplified flow vs. full 4-dim passage reading:
+//   - TTS reference (live speechSynthesis, no audio bytes pre-gen)
+//   - Record student audio (reuses MediaRecorder iOS PWA ladder)
+//   - After record: side-by-side TTS / student replay + char-level diff
+//   - No 4-dim scoring (vocab too short to score meaningfully)
+//   - Student can also manually type what they read for the diff
+let _vocabRecorder = null;
+let _vocabChunks = [];
+let _vocabStream = null;
+let _vocabItemId = null;
+let _vocabAudioBlob = null;
+let _vocabManualTranscript = '';
+
+function startVocabPractice(itemId) {
+  const item = _getCustomItemById(itemId);
+  if (!item || item.type !== 'vocab') { showToast('❌ 找不到詞彙'); return; }
+  _vocabItemId = itemId;
+  _vocabAudioBlob = null;
+  _vocabManualTranscript = '';
+  // Touch lastUsedAt for analytics / cleanup signals
+  _updateCustomItem(itemId, { lastUsedAt: new Date().toISOString() });
+  state.customContent = _loadCustomContentStore();
+  _renderVocabPracticePage();
+  goTo('result');
+}
+
+function _renderVocabPracticePage() {
+  const item = _getCustomItemById(_vocabItemId);
+  if (!item) return;
+  const titleEl = document.getElementById('resultWord');
+  if (titleEl) titleEl.textContent = '詞彙：' + item.text;
+  const scoreEl = document.getElementById('resultScore');
+  if (scoreEl) { scoreEl.textContent = '— / 100'; scoreEl.style.color = '#7c3aed'; }
+  const tierEl = document.getElementById('resultTier');
+  if (tierEl) tierEl.textContent = '🔤 TTS 對比模式（無評分）';
+  const fbEl = document.getElementById('resultFeedback');
+  if (fbEl) fbEl.textContent = '錄音後即場對比你同 TTS 嘅發音。';
+  // Clear other result panels (this mode doesn't use them)
+  ['resultSubScores', 'resultDiff', 'resultFluency', 'resultWordList'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = '';
+  });
+  const container = document.getElementById('resultAI');
+  if (!container) return;
+  container.innerHTML = `
+    <div style="background:rgba(124,58,237,0.1);border:2px solid #7c3aed;border-radius:12px;padding:14px;margin-bottom:14px;text-align:left;">
+      <p style="font-weight:bold;color:#7c3aed;margin-bottom:8px;">🔊 TTS 參考音</p>
+      <button onclick="App._vocabReplayTTS()" style="width:100%;background:#7c3aed;color:#fff;font-size:1.1em;padding:14px;min-height:48px;border-radius:10px;">▶ 播放 TTS 參考音</button>
+      <p style="font-size:0.85em;color:rgba(255,255,255,0.7);margin-top:6px;">${_e(_getCustomItemVoiceLabel(item.voiceId))} · 撳多次可重播</p>
+    </div>
+    <div style="background:rgba(245,158,11,0.1);border:2px solid #f59e0b;border-radius:12px;padding:14px;margin-bottom:14px;text-align:left;">
+      <p style="font-weight:bold;color:#f59e0b;margin-bottom:8px;">⏺ 學生錄音</p>
+      <div id="vocabRecordStatus" style="font-size:0.9em;color:rgba(255,255,255,0.7);margin-bottom:8px;">準備好就撳下面掣開始。</div>
+      <button id="vocabRecordBtn" onclick="App._vocabToggleRecord()" style="width:100%;background:#dc2626;color:#fff;font-size:1.1em;padding:14px;min-height:48px;border-radius:10px;">⏺ 開始錄音</button>
+    </div>
+    <div id="vocabDiffSection" style="display:none;background:rgba(34,197,94,0.1);border:2px solid #22c55e;border-radius:12px;padding:14px;text-align:left;">
+      <p style="font-weight:bold;color:#22c55e;margin-bottom:8px;">📊 發音對比</p>
+      <div style="margin-bottom:8px;font-size:0.9em;color:rgba(255,255,255,0.7);">TTS：<span style="font-size:1.2em;color:#7c3aed;">${_e(item.text)}</span></div>
+      <div style="margin-bottom:10px;font-size:0.9em;color:rgba(255,255,255,0.7);">
+        你讀咗：
+        <input id="vocabManualInput" type="text" maxlength="20" placeholder="（可手動輸入）"
+          style="font-size:1.1em;padding:4px 8px;border:1px solid #555;background:#222;color:#f59e0b;border-radius:6px;width:120px;margin-left:4px;"
+          oninput="App._vocabOnManualInput(this.value)">
+        <button onclick="App._vocabRetry()" style="margin-left:8px;background:#f59e0b;font-size:0.85em;padding:6px 10px;min-height:36px;">↻ 重錄</button>
+      </div>
+      <div id="vocabDiffResult" style="font-size:1.3em;line-height:1.6;padding:8px;background:rgba(0,0,0,0.2);border-radius:8px;"></div>
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button onclick="App._vocabPlayMyRecording()" style="flex:1;background:#0ea5e9;font-size:0.95em;padding:10px;min-height:44px;">▶ 聽自己</button>
+        <button onclick="App._vocabReplayTTS()" style="flex:1;background:#7c3aed;font-size:0.95em;padding:10px;min-height:44px;">🔊 TTS</button>
+      </div>
+    </div>
+    <div style="margin-top:14px;">
+      <button onclick="App.goTo('assessment')" style="width:100%;background:#666;font-size:0.95em;padding:10px;min-height:44px;">← 返回選擇</button>
+    </div>
+  `;
+  // Initial diff render (empty)
+  _refreshVocabDiff();
+}
+
+function _vocabToggleRecord() {
+  if (_vocabRecorder && _vocabRecorder.state === 'recording') {
+    _vocabStopRecording();
+  } else {
+    _vocabStartRecording();
+  }
+}
+
+async function _vocabStartRecording() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showToast('❌ 瀏覽器不支援錄音'); return;
+  }
+  try {
+    _vocabChunks = [];
+    const constraints = (typeof _getAudioConstraints === 'function') ? _getAudioConstraints() : { audio: true };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    _vocabStream = stream;
+    const mimeType = (typeof _pickMimeType === 'function') ? _pickMimeType() : '';
+    _vocabRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    _vocabRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) _vocabChunks.push(e.data); };
+    _vocabRecorder.onstop = () => {
+      const mime = (_vocabRecorder && _vocabRecorder.mimeType) || 'audio/webm';
+      _vocabAudioBlob = new Blob(_vocabChunks, { type: mime });
+      if (_vocabStream) {
+        _vocabStream.getTracks().forEach(t => t.stop());
+        _vocabStream = null;
+      }
+      const recBtn = document.getElementById('vocabRecordBtn');
+      if (recBtn) { recBtn.textContent = '⏺ 重新錄音'; recBtn.style.background = '#f59e0b'; }
+      document.getElementById('vocabRecordStatus').textContent = '✅ 錄音完成。輸入你讀咩嘅字睇對比。';
+      // Show diff section
+      const sectionEl = document.getElementById('vocabDiffSection');
+      if (sectionEl) sectionEl.style.display = 'block';
+      _refreshVocabDiff();
+    };
+    _vocabRecorder.onerror = (e) => {
+      console.warn('[vocabRec] error', e);
+      showToast('❌ 錄音出錯');
+    };
+    _vocabRecorder.start();
+    const recBtn = document.getElementById('vocabRecordBtn');
+    if (recBtn) { recBtn.textContent = '⏹ 停止錄音'; recBtn.style.background = '#666'; }
+    document.getElementById('vocabRecordStatus').textContent = '🔴 錄音中…撳「停止」完成。';
+  } catch (e) {
+    showToast('❌ 錄音失敗：' + (e.message || e.name || 'unknown'));
+    if (_vocabStream) { _vocabStream.getTracks().forEach(t => t.stop()); _vocabStream = null; }
+  }
+}
+
+function _vocabStopRecording() {
+  if (_vocabRecorder && _vocabRecorder.state === 'recording') {
+    try { _vocabRecorder.stop(); } catch(e) { console.warn(e); }
+  }
+}
+
+function _vocabPlayMyRecording() {
+  if (!_vocabAudioBlob) { showToast('❌ 冇錄音可重播'); return; }
+  const url = URL.createObjectURL(_vocabAudioBlob);
+  const audio = new Audio(url);
+  audio.onended = () => URL.revokeObjectURL(url);
+  audio.play().catch(e => { showToast('❌ 播放失敗：' + e.message); URL.revokeObjectURL(url); });
+}
+
+function _vocabReplayTTS() {
+  if (_vocabItemId) _playCustomItemTTS(_vocabItemId);
+}
+
+function _vocabRetry() {
+  _vocabAudioBlob = null;
+  _vocabManualTranscript = '';
+  const input = document.getElementById('vocabManualInput');
+  if (input) input.value = '';
+  const recBtn = document.getElementById('vocabRecordBtn');
+  if (recBtn) { recBtn.textContent = '⏺ 開始錄音'; recBtn.style.background = '#dc2626'; }
+  const sectionEl = document.getElementById('vocabDiffSection');
+  if (sectionEl) sectionEl.style.display = 'none';
+  document.getElementById('vocabRecordStatus').textContent = '準備好就撳下面掣開始。';
+}
+
+function _vocabOnManualInput(value) {
+  _vocabManualTranscript = value || '';
+  _refreshVocabDiff();
+}
+
+function _refreshVocabDiff() {
+  const item = _getCustomItemById(_vocabItemId);
+  if (!item) return;
+  const resultEl = document.getElementById('vocabDiffResult');
+  if (!resultEl) return;
+  resultEl.innerHTML = _renderCharLevelDiff(item.text, _vocabManualTranscript);
+}
+
+function _renderCharLevelDiff(reference, transcribed) {
+  // 1-to-1 char alignment (per spec §12.1 — simple version).
+  // Vocab too short for Levenshtein; just walk both arrays in parallel.
+  const refChars = [...(reference || '')].filter(c => /\S/.test(c));
+  const transChars = [...(transcribed || '')].replace(/\s/g, '').split('');
+  if (refChars.length === 0) return '<span style="color:#666;">（無對比內容）</span>';
+  if (transChars.length === 0) {
+    return refChars.map(c => `<span title="未讀" style="color:#f59e0b;background:rgba(245,158,11,0.15);padding:3px 8px;border-radius:6px;margin-right:4px;">${_e(c)}</span>`).join('');
+  }
+  const maxLen = Math.max(refChars.length, transChars.length);
+  let html = '';
+  for (let i = 0; i < maxLen; i++) {
+    const ref = refChars[i];
+    const trans = transChars[i];
+    if (ref === undefined) {
+      html += `<span title="多出" style="color:#ef4444;background:rgba(239,68,68,0.15);padding:3px 8px;border-radius:6px;margin-right:4px;text-decoration:line-through;">${_e(trans)}</span>`;
+    } else if (trans === undefined) {
+      html += `<span title="漏讀" style="color:#f59e0b;background:rgba(245,158,11,0.15);padding:3px 8px;border-radius:6px;margin-right:4px;">${_e(ref)}</span>`;
+    } else if (ref === trans) {
+      html += `<span style="color:#22c55e;background:rgba(34,197,94,0.15);padding:3px 8px;border-radius:6px;margin-right:4px;">${_e(ref)}</span>`;
+    } else {
+      html += `<span title="原字" style="color:#f59e0b;background:rgba(245,158,11,0.15);padding:3px 8px;border-radius:6px;margin-right:2px;">${_e(ref)}</span><span style="color:#666;margin:0 1px;">/</span><span title="你讀" style="color:#ef4444;background:rgba(239,68,68,0.15);padding:3px 8px;border-radius:6px;margin-right:4px;">${_e(trans)}</span>`;
+    }
+  }
+  return html;
 }
 
 function startPassageReading(passage) {
@@ -6630,7 +6871,10 @@ window.App = {
   retryCustomContentTTS,
   _updateCustomContentTypeHint, _updateCustomContentCharCount,
   _previewCustomContentVoice, _previewCustomItem, _renderCustomContentList,
-  _pregenCustomItemTTS, _prewarmAllCustomContentTTS, _playCustomItemTTS
+  _pregenCustomItemTTS, _prewarmAllCustomContentTTS, _playCustomItemTTS,
+  // Vocab practice (Sprint 6 c4)
+  startVocabPractice, _vocabToggleRecord, _vocabPlayMyRecording,
+  _vocabReplayTTS, _vocabRetry, _vocabOnManualInput
 };
 // Kick off: start the SPA after the API surface is mounted.
 init();
