@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'vocab-default @ 2026-07-22';
+  window.__BUILD_ID = 'ui-simplify-l2 @ 2026-07-22';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -296,7 +296,7 @@ button:active { transform:scale(0.95); }
 
     <!-- 逐字 diff highlight -->
     <div style="background:#f3e8ff;padding:14px;border-radius:14px;margin:14px 0;text-align:left;">
-      <div style="font-weight:bold;margin-bottom:6px;color:#7c3aed;font-size:0.95em;">📝 逐字對齊 <span style="font-weight:normal;font-size:0.85em;color:rgba(0,0,0,0.6);">（綠=啱 紅=錯 灰=漏咗 黃=多咗）</span> <span style="font-weight:normal;font-size:0.82em;color:#7c3aed;background:#ede9fe;padding:2px 8px;border-radius:6px;margin-left:6px;">👆 撳字聽自己</span></div>
+      <div style="font-weight:bold;margin-bottom:6px;color:#7c3aed;font-size:0.95em;">📝 逐字對齊 <span style="font-weight:normal;font-size:0.82em;color:#7c3aed;background:#ede9fe;padding:2px 8px;border-radius:6px;margin-left:6px;">👆 撳字聽自己</span></div>
       <div id="resultDiff" style="line-height:1.9;font-size:1.15em;font-family:inherit;"></div>
     </div>
 
@@ -1461,6 +1461,10 @@ const __debug = (() => {
 // to re-render with the latest buffer. Hidden if debug mode is off.
 function __debugRenderPanel() {
   if (!__debug.enabled()) return;
+  // L2 simplify: hide debug panel in student mode even if debug is enabled
+  // (teacher may have toggled it on, then exited teacher mode — panel must
+  // not leak into student view). Per sprint-6/ui-simplify-l2.
+  if (state.mode === 'student') return;
   let panel = document.getElementById('__debugPanel');
   const entries = __debug.get();
   if (!panel) {
@@ -4237,10 +4241,11 @@ function _renderDiffHighlight(target, align, transcript) {
     html += `</div>`;
   }
   el.innerHTML = html;
-  // Sprint 4: mode toggle (chain / mix) — always visible when replayable.
-  // Persists in sessionStorage. Default "chain" preserves Sprint 3 behavior;
-  // "mix" plays user + TTS simultaneously for direct A/B comparison.
-  if (replayable) {
+  // Sprint 4: mode toggle (chain / mix) — hidden in L2 simplify.
+  // _playMode still respected at playback time (default 'chain' from sessionStorage);
+  // only the toggle UI is hidden. Power users can flip via console:
+  //   _setPlayMode('mix'); App._renderDiffHighlight(...);
+  if (false && replayable) {
     const modeToggle = document.createElement('div');
     modeToggle.style.cssText = 'margin-top:10px;margin-bottom:6px;padding:8px 10px;background:#f3f4f6;border-radius:8px;display:flex;align-items:center;gap:8px;font-size:0.85em;flex-wrap:wrap;';
     const chainActive = _playMode === 'chain';
@@ -4255,12 +4260,13 @@ function _renderDiffHighlight(target, align, transcript) {
       btn.onclick = (e) => { e.stopPropagation(); _setPlayMode(btn.dataset.replayMode); };
     });
   }
-  // Add a one-time hint if the user hasn't discovered click-to-replay yet
-  if (replayable && !sessionStorage.getItem('yueReplayHintShown')) {
-    sessionStorage.setItem('yueReplayHintShown', '1');
+  // L2 simplify: hint dismissed permanently via localStorage (was sessionStorage).
+  // First visit: show once. After dismiss: never again until user clears storage.
+  if (replayable && !localStorage.getItem('yueReplayHintDismissed')) {
+    localStorage.setItem('yueReplayHintDismissed', '1');
     const hint = document.createElement('div');
     hint.style.cssText = 'margin-top:8px;padding:6px 10px;background:#ddd6fe;color:#5b21b6;border-radius:8px;font-size:0.82em;text-align:left;';
-    hint.innerHTML = '💡 <b>新功能：</b>撳任何「<span style="color:#16a34a;">啱</span> / <span style="color:#dc2626;text-decoration:line-through;">錯</span> / <span style="color:#6b7280;border-bottom:2px dotted #9ca3af;">漏</span> / <span style="background:#fef3c7;">多咗</span>」嘅字就會聽到自己嗰刻錄嘅音，<b>仲會自動播埋標準粵語發音</b>畀你對比。<br>💡 上面嘅「🔀 同時」可以兩個一齊播直接聽差異。';
+    hint.innerHTML = '💡 <b>提示：</b>撳任何彩色嘅字就會聽到自己嗰刻錄嘅音，<b>仲會自動播埋標準粵語發音</b>畀你對比。';
     el.appendChild(hint);
   }
 }
@@ -5012,6 +5018,13 @@ async function enterTeacherMode() {
 
 function exitTeacherMode() {
   state.mode = 'student';
+  // L2 simplify: turn off debug mode + remove panel when leaving teacher mode
+  // (students should never see dev logs even if teacher enabled debug earlier).
+  if (typeof __debug !== 'undefined' && __debug.enabled()) {
+    try { localStorage.removeItem('yueDebug'); } catch (e) {}
+    const panel = document.getElementById('__debugPanel');
+    if (panel) panel.remove();
+  }
   goTo('home');
   showToast('👋 已退出老師模式');
 }
