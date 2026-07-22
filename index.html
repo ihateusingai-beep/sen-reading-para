@@ -4872,7 +4872,11 @@ function _loginStudent(student) {
   showToast(`歡迎返嚟，${student.name}！`);
 }
 
-const _TEACHER_PASS_KEY = 'yueTeacherPassHash';
+// v2 key forces school-wide default Hcwmc even if older devices set a random first-run password.
+const _TEACHER_PASS_KEY = 'yueTeacherPassHash_v2';
+// School default password: Hcwmc (SHA-256). Seeded on first run; reset-able in settings.
+const _DEFAULT_TEACHER_PASS_HASH = '9b6ac3c00f4e409f84625e9ef842cb0d759b103d232e16571c91ba24923274e4';
+const _TEACHER_PASS_MIN = 5;
 
 async function _hashTeacherPass(pass) {
   const data = new TextEncoder().encode(pass);
@@ -4880,25 +4884,21 @@ async function _hashTeacherPass(pass) {
   return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function enterTeacherMode() {
-  // First-time setup: ask teacher to set a password (min 6 chars)
+function _ensureTeacherPassSeeded() {
   let stored = localStorage.getItem(_TEACHER_PASS_KEY);
   if (!stored) {
-    const pass = prompt('首次進入老師模式。請設定老師密碼（至少 6 個字元）：');
-    if (!pass) return;
-    if (pass.length < 6) { alert('密碼至少 6 個字元'); return; }
-    const confirm = prompt('再輸入一次確認：');
-    if (confirm !== pass) { alert('兩次輸入唔一致'); return; }
-    const hash = await _hashTeacherPass(pass);
-    localStorage.setItem(_TEACHER_PASS_KEY, hash);
-    showToast('✅ 老師密碼已設定');
-  } else {
-    // Existing: ask for password
-    const pass = prompt('請輸入老師密碼：');
-    if (!pass) return;
-    const hash = await _hashTeacherPass(pass);
-    if (hash !== stored) { alert('❌ 密碼唔啱'); return; }
+    localStorage.setItem(_TEACHER_PASS_KEY, _DEFAULT_TEACHER_PASS_HASH);
+    stored = _DEFAULT_TEACHER_PASS_HASH;
   }
+  return stored;
+}
+
+async function enterTeacherMode() {
+  const stored = _ensureTeacherPassSeeded();
+  const pass = prompt('請輸入老師密碼：');
+  if (!pass) return;
+  const hash = await _hashTeacherPass(pass);
+  if (hash !== stored) { alert('❌ 密碼唔啱'); return; }
   state.mode = 'teacher';
   goTo('teacher');
   tchSwitchTab('dashboard');
@@ -4920,9 +4920,9 @@ function saveTimeout() {
 // Allow teacher to reset their password from the settings tab
 async function resetTeacherPassword() {
   if (!confirm('確定重設老師密碼？')) return;
-  const pass = prompt('新密碼（至少 6 個字元）：');
+  const pass = prompt(`新密碼（至少 ${_TEACHER_PASS_MIN} 個字元）：`);
   if (!pass) return;
-  if (pass.length < 6) { alert('密碼至少 6 個字元'); return; }
+  if (pass.length < _TEACHER_PASS_MIN) { alert(`密碼至少 ${_TEACHER_PASS_MIN} 個字元`); return; }
   const confirm = prompt('再輸入一次確認：');
   if (confirm !== pass) { alert('兩次輸入唔一致'); return; }
   const hash = await _hashTeacherPass(pass);
