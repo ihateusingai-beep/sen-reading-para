@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'tts-custom-content-c2 @ 2026-07-22';
+  window.__BUILD_ID = 'tts-custom-content-c3 @ 2026-07-22';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -965,6 +965,88 @@ function retryCustomContentTTS(id) {
     return;
   }
   _pregenCustomItemTTS(id);
+}
+
+// ================== CUSTOM CONTENT TTS (Sprint 6 commit 3) ==================
+// IMPORTANT: iOS PWA / browsers cannot capture SpeechSynthesis output as
+// audio bytes — TTS plays through the OS audio path, not a Web Audio graph.
+// We do NOT pre-generate ttsAudioBase64; instead we pre-validate voice
+// availability per item and mark ttsStatus accordingly. On student play,
+// we call speechSynthesis.speak() live (latency ~300-500ms, acceptable).
+function _pregenCustomItemTTS(itemId) {
+  const it = _getCustomItemById(itemId);
+  if (!it) return Promise.resolve({ ok: false, error: 'NOT_FOUND' });
+  return new Promise((resolve) => {
+    const voice = _findSpeechSynthesisVoice(it.voiceId);
+    if (!voice) {
+      const errMsg = `裝置冇對應語音 (${it.voiceId})`;
+      const r = _updateCustomItem(itemId, { ttsStatus: 'failed', ttsError: errMsg });
+      state.customContent = _loadCustomContentStore();
+      _renderCustomContentList();
+      resolve({ ok: false, error: errMsg, updated: r.ok });
+      return;
+    }
+    // Voice is available. Do a silent test speak to confirm utterance
+    // actually fires (iOS Safari edge case: getVoices() returns voice but
+    // speak() silently fails for unsupported text). If test fails,
+    // downgrade to 'failed'.
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      const patch = ok
+        ? { ttsStatus: 'ready', ttsError: undefined }
+        : { ttsStatus: 'failed', ttsError: 'TTS 測試播放失敗' };
+      const r = _updateCustomItem(itemId, patch);
+      state.customContent = _loadCustomContentStore();
+      _renderCustomContentList();
+      resolve({ ok, item: r.item });
+    };
+    try {
+      const u = new SpeechSynthesisUtterance(it.text);
+      u.lang = 'zh-HK';
+      u.voice = voice;
+      u.volume = 0; // silent test
+      const t = setTimeout(() => finish(false), 5000); // 5s test timeout
+      u.onend = () => { clearTimeout(t); finish(true); };
+      u.onerror = (e) => { clearTimeout(t); console.warn('[pregenTTS] error', e); finish(false); };
+      speechSynthesis.cancel();
+      speechSynthesis.speak(u);
+    } catch (e) {
+      console.warn('[pregenTTS] threw', e);
+      finish(false);
+    }
+  });
+}
+
+function _prewarmAllCustomContentTTS() {
+  if (!state.customContent || !Array.isArray(state.customContent.items)) return;
+  // Fire-and-forget: validate TTS availability for all items not yet 'ready'.
+  // Stagger slightly to avoid race when getVoices() is still loading.
+  state.customContent.items.forEach((it, i) => {
+    if (it.ttsStatus === 'ready') return;
+    setTimeout(() => {
+      _pregenCustomItemTTS(it.id).catch(e => console.warn('[prewarm]', e));
+    }, i * 100);
+  });
+}
+
+function _playCustomItemTTS(itemId) {
+  const it = _getCustomItemById(itemId);
+  if (!it) return null;
+  if (!('speechSynthesis' in window)) { showToast('❌ 瀏覽器不支援 TTS'); return null; }
+  const voice = _findSpeechSynthesisVoice(it.voiceId);
+  if (!voice) {
+    showToast('⚠️ 裝置冇對應語音，請揀另一個');
+    return null;
+  }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(it.text);
+  u.lang = 'zh-HK';
+  u.voice = voice;
+  u.rate = 0.85;
+  speechSynthesis.speak(u);
+  return u;
 }
 
 // ================== DEBUG OVERLAY ==================
@@ -4322,6 +4404,10 @@ async function init() {
   // state.customContent is a stable shape for downstream code.
   state.customContent = _loadCustomContentStore();
 
+  // Pre-warm TTS availability for all custom items (fire-and-forget).
+  // Staggered 100ms apart to avoid races on getVoices() load.
+  setTimeout(() => { try { _prewarmAllCustomContentTTS(); } catch(e) { console.warn('[prewarm-custom]', e); } }, 250);
+
   const savedTypes = localStorage.getItem('yueTypes');
   if (savedTypes) {
     try { state.types = JSON.parse(savedTypes); } catch(e) { state.types = _DEFAULT_TYPES; }
@@ -6543,7 +6629,8 @@ window.App = {
   editCustomContentItem, deleteCustomContentItem, confirmClearAllCustomContent,
   retryCustomContentTTS,
   _updateCustomContentTypeHint, _updateCustomContentCharCount,
-  _previewCustomContentVoice, _previewCustomItem, _renderCustomContentList
+  _previewCustomContentVoice, _previewCustomItem, _renderCustomContentList,
+  _pregenCustomItemTTS, _prewarmAllCustomContentTTS, _playCustomItemTTS
 };
 // Kick off: start the SPA after the API surface is mounted.
 init();
