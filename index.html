@@ -24,7 +24,7 @@
   // the main script's init(), leaving window.__BUILD_ID undefined when
   // init() tries to inject it into the trace.
   // Format: <commit-short-sha> @ <iso-date> (<short-summary>)
-  window.__BUILD_ID = 'ui-simplify-l2 @ 2026-07-22';
+  window.__BUILD_ID = 'school-brand @ 2026-10-11';
 </script>
 <style>
 :root { --purple:#7c3aed; --gold:#f59e0b; --green:#22c55e; --red:#ef4444; }
@@ -191,8 +191,15 @@ button:active { transform:scale(0.95); }
 <!-- HOME / LOGIN — student grid (no auth needed for SEN use case) -->
 <div id="home" class="page active">
   <div style="text-align:center;max-width:700px;margin:40px auto;padding:0 20px;">
-    <h1 style="font-size:2.2em;color:#f59e0b;margin-bottom:8px;">朗讀評分</h1>
-    <p style="font-size:1.2em;color:rgba(255,255,255,0.8);margin-bottom:32px;">散文・詩詞朗讀評估</p>
+    <!-- School branding header (Tseung Kwan O Pui Chi School) -->
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;justify-content:center;flex-wrap:wrap;">
+      <img src="https://www.puichi.edu.hk/it-school/php/webcms/files/upload/tinymce//1a__pui_chi_logo_png_1791177564.png" alt="將軍澳培智學校" style="width:64px;height:64px;border-radius:12px;background:#fff;padding:4px;box-shadow:0 2px 8px rgba(0,0,0,0.3);">
+      <div style="text-align:left;">
+        <div style="font-size:0.95em;color:#7DD3FC;font-weight:600;letter-spacing:0.05em;">將軍澳培智學校</div>
+        <h1 style="font-size:2em;color:#7DD3FC;margin:4px 0 0;">朗讀評分</h1>
+      </div>
+    </div>
+    <p style="font-size:1.1em;color:rgba(255,255,255,0.85);margin-bottom:32px;">散文・詩詞・詞彙朗讀評估</p>
 
     <!-- Student avatar grid -->
     <p style="font-size:1.1em;color:rgba(255,255,255,0.7);margin-bottom:20px;">撳你嘅相卡嚟開始朗讀</p>
@@ -222,7 +229,7 @@ button:active { transform:scale(0.95); }
 <!-- HUB -->
 <div id="hub" class="page">
   <div style="max-width:800px;margin:40px auto;text-align:center;">
-    <div id="hubGreeting" style="font-size:2em;margin-bottom:30px;">👋 你好，準備好未？</div>
+    <div id="hubGreeting" style="font-size:2em;margin-bottom:30px;color:#7DD3FC;">👋 你好，準備好未？</div>
     <div class="hub-grid">
       <div class="hub-card" onclick="App.goTo('assessment');App.startAssessment();">
         <div class="hub-icon">📖</div>
@@ -4883,12 +4890,13 @@ async function init() {
     hasPassages: state.passages.length,
     progressKeys: Object.keys(state.progress).length
   });
-  // Surface the build ID in the page footer so users can verify they're on
-  // the latest deploy (helps debug "did my browser cache the old file?").
+  // Page footer with school branding + copyright + build ID stamp.
+  // School name (light blue accent) + Copyright line center + build ID right
+  // so users can verify they're on the latest deploy.
   const footerEl = document.createElement('div');
-  footerEl.id = '__buildStamp';
-  footerEl.style.cssText = 'position:fixed;bottom:2px;left:6px;font-family:ui-monospace,monospace;font-size:9px;color:rgba(255,255,255,0.35);z-index:99998;pointer-events:none;user-select:none;';
-  footerEl.textContent = window.__BUILD_ID || 'build-unknown';
+  footerEl.id = '__footer';
+  footerEl.style.cssText = 'position:fixed;bottom:0;left:0;right:0;padding:8px 16px;background:rgba(0,0,0,0.6);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:rgba(255,255,255,0.85);font-family:ui-sans-serif,system-ui,sans-serif;font-size:11px;text-align:center;z-index:99998;border-top:1px solid rgba(125,211,252,0.35);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;';
+  footerEl.innerHTML = '<span style="color:#7DD3FC;font-weight:500;">將軍澳培智學校</span><span>Copyright © Tseung Kwan O Pui Chi School. All Rights Reserved.</span><span style="font-family:ui-monospace,monospace;font-size:9px;color:rgba(255,255,255,0.4);">' + (window.__BUILD_ID || 'build-unknown') + '</span>';
   document.body.appendChild(footerEl);
   if (typeof __debugRenderPanel === 'function') {
     try { __debugRenderPanel(); } catch (e) { console.warn('debug panel mount failed', e); }
